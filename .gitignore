@@ -1,0 +1,12 @@
+# 這個 repo 裡本來就不該有任何設定或祕密 —— caddyctl 直接寫到機器上的
+# C:\Caddy，中間不經過任何檔案。下面這幾條是防呆：萬一有人習慣性地
+# 產生了暫存目錄，也不會不小心 commit 進來。
+out/
+staging/
+*.token
+
+# 安裝過程貼出來的輸出。裡面會有真實的機器名、帳號名、路徑。
+*-response.txt
+
+node_modules/
+*.log

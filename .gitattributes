@@ -1,0 +1,8 @@
+# 這個產品只跑在 Windows，checkout 一律用 CRLF。
+* text=auto eol=crlf
+
+# .ps1 的編碼是硬性要求，不是風格：含非 ASCII 的腳本必須是 UTF-8 with BOM，
+# 否則 Windows PowerShell 5.1 會當成系統 ANSI 去讀，然後安靜地解析失敗
+# （exit code 還是 0，但後半段沒執行）。git 會原樣保留 BOM，不要用任何
+# working-tree-encoding 之類的設定去動它。
+*.ps1 text eol=crlf

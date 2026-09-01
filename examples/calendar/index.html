@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>行事曆</title>
+<!--
+  skill-caddy 範例：純靜態 SPA（有本機狀態）
+  ===========================================================================
+  整包複製到內容根目錄底下（預設 D:\www\calendar\）就能用，不用 reload Caddy。
+
+  記事存在瀏覽器的 localStorage 裡 —— 也就是說**它只存在於這台裝置上**，
+  換一支手機就看不到。想跨裝置同步的話，那就不是靜態站了，
+  要一個會存東西的服務，見隔壁的 hello-service 範例。
+-->
+<style>
+:root{
+  --bg:#fff; --fg:#1f2328; --mut:#59636e; --line:#d1d9e0; --card:#f6f8fa;
+  --accent:#0969da; --accent-bg:#ddf4ff; --sun:#cf222e; --dot:#1f883d;
+  --hover:#eef1f4;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0d1117; --fg:#e6edf3; --mut:#9198a1; --line:#3d444d; --card:#151b23;
+    --accent:#4493f8; --accent-bg:#193b61; --sun:#ff7b72; --dot:#3fb950;
+    --hover:#21262d;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--fg);
+     font:16px/1.5 -apple-system,"Segoe UI","Noto Sans TC",system-ui,sans-serif;
+     padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:32rem;margin:0 auto;padding:1rem .75rem 3rem}
+
+/* ---- 標頭 ---- */
+header{display:flex;align-items:center;gap:.4rem;margin-bottom:.9rem}
+h1{font-size:1.25rem;margin:0;flex:1;font-variant-numeric:tabular-nums}
+h1 small{color:var(--mut);font-size:.75rem;font-weight:400;margin-left:.4rem}
+header button{font:inherit;background:var(--card);color:inherit;
+              border:1px solid var(--line);border-radius:10px;
+              padding:.4rem .7rem;cursor:pointer;line-height:1}
+header button:hover{background:var(--hover)}
+header .today{font-size:.85rem}
+
+/* ---- 月曆格 ---- */
+.grid{display:grid;grid-template-columns:repeat(7,1fr);gap:.3rem}
+.wd{text-align:center;font-size:.75rem;color:var(--mut);padding-bottom:.2rem}
+.wd.sun{color:var(--sun)}
+.cell{position:relative;aspect-ratio:1;border:1px solid transparent;border-radius:11px;
+      background:var(--card);cursor:pointer;font:inherit;color:inherit;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      gap:.15rem;padding:0;font-variant-numeric:tabular-nums}
+.cell:hover{background:var(--hover)}
+.cell.pad{background:none;color:var(--mut);opacity:.45}
+.cell.sun:not(.pad){color:var(--sun)}
+.cell.today{border-color:var(--accent);background:var(--accent-bg);font-weight:700}
+.cell.sel{outline:2px solid var(--accent);outline-offset:-2px}
+.cell .n{font-size:1rem}
+.cell .dot{width:5px;height:5px;border-radius:50%;background:var(--dot)}
+.cell .dot.hidden{visibility:hidden}
+
+/* ---- 記事 ---- */
+.note{margin-top:1rem;border:1px solid var(--line);border-radius:14px;
+      background:var(--card);padding:.85rem}
+.note h2{font-size:.95rem;margin:0 0 .5rem;display:flex;align-items:center;gap:.5rem}
+.note h2 span{color:var(--mut);font-weight:400;font-size:.8rem}
+.note textarea{width:100%;min-height:6rem;resize:vertical;font:inherit;
+               background:var(--bg);color:inherit;border:1px solid var(--line);
+               border-radius:10px;padding:.6rem}
+.note .row{display:flex;gap:.5rem;align-items:center;margin-top:.5rem}
+.note button{font:inherit;font-size:.85rem;border:1px solid var(--line);
+             border-radius:9px;padding:.4rem .8rem;cursor:pointer;
+             background:var(--card);color:inherit}
+.note button:hover{background:var(--hover)}
+.note .saved{color:var(--mut);font-size:.8rem;margin-left:auto}
+.hint{margin-top:1.2rem;font-size:.75rem;color:var(--mut);text-align:center;line-height:1.9}
+kbd{background:var(--card);border:1px solid var(--line);border-radius:5px;
+    padding:.05em .35em;font-size:.9em}
+</style>
+
+<main>
+  <header>
+    <h1 id="title"></h1>
+    <button id="prev" title="上個月">&#8249;</button>
+    <button class="today" id="today">今天</button>
+    <button id="next" title="下個月">&#8250;</button>
+  </header>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="note" id="note" hidden>
+    <h2><span id="noteDate"></span></h2>
+    <textarea id="noteText" placeholder="這一天要做什麼…"></textarea>
+    <div class="row">
+      <button id="noteSave">儲存</button>
+      <button id="noteDel">刪除</button>
+      <span class="saved" id="noteState"></span>
+    </div>
+  </div>
+
+  <div class="hint">
+    <kbd>&larr;</kbd><kbd>&rarr;</kbd> 換月 &middot; <kbd>&uarr;</kbd><kbd>&darr;</kbd> 換年 &middot; <kbd>T</kbd> 回到今天<br>
+    記事只存在這台裝置的瀏覽器裡
+  </div>
+</main>
+
+<script>
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+const KEY = 'skill-caddy.calendar.notes';
+
+const $ = id => document.getElementById(id);
+const iso = d => d.getFullYear() + '-' +
+                 String(d.getMonth() + 1).padStart(2, '0') + '-' +
+                 String(d.getDate()).padStart(2, '0');
+
+let notes = {};
+// localStorage 在無痕視窗、或瀏覽器擋了網站資料時會直接丟例外，一律包起來。
+try { notes = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch { /* 沒有就沒有 */ }
+function saveNotes() {
+  try { localStorage.setItem(KEY, JSON.stringify(notes)); return true; }
+  catch { return false; }
+}
+
+const today = new Date();
+const todayISO = iso(today);
+let view = new Date(today.getFullYear(), today.getMonth(), 1);   // 目前顯示的月份
+let selected = null;                                             // 選到的日期（ISO 字串）
+
+function render() {
+  const y = view.getFullYear(), m = view.getMonth();
+  $('title').innerHTML = y + ' 年 ' + (m + 1) + ' 月' +
+    (y === today.getFullYear() && m === today.getMonth() ? ' <small>本月</small>' : '');
+
+  const grid = $('grid');
+  grid.textContent = '';
+
+  for (let i = 0; i < 7; i++) {
+    const h = document.createElement('div');
+    h.className = 'wd' + (i === 0 ? ' sun' : '');
+    h.textContent = WD[i];
+    grid.appendChild(h);
+  }
+
+  const first = new Date(y, m, 1);
+  const start = new Date(y, m, 1 - first.getDay());   // 從該週的星期日開始排
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+    const key = iso(d);
+    const cell = document.createElement('button');
+    cell.className = 'cell'
+      + (d.getMonth() === m ? '' : ' pad')
+      + (d.getDay() === 0 ? ' sun' : '')
+      + (key === todayISO ? ' today' : '')
+      + (key === selected ? ' sel' : '');
+    cell.dataset.date = key;
+
+    const n = document.createElement('span');
+    n.className = 'n';
+    n.textContent = d.getDate();
+
+    const dot = document.createElement('span');
+    dot.className = 'dot' + (notes[key] ? '' : ' hidden');
+
+    cell.append(n, dot);
+    grid.appendChild(cell);
+
+    // 最後一列整列都是下個月的話就不畫（有些月份只需要 5 列）
+    if (i === 34 && new Date(y, m + 1, 0).getDate() + first.getDay() <= 35) break;
+  }
+  renderNote();
+}
+
+function renderNote() {
+  const box = $('note');
+  if (!selected) { box.hidden = true; return; }
+  box.hidden = false;
+  const d = new Date(selected + 'T00:00:00');
+  $('noteDate').textContent =
+    selected + '（星期' + WD[d.getDay()] + '）' + (selected === todayISO ? ' · 今天' : '');
+  $('noteText').value = notes[selected] || '';
+  $('noteState').textContent = '';
+}
+
+$('grid').addEventListener('click', e => {
+  const cell = e.target.closest('.cell');
+  if (!cell) return;
+  const key = cell.dataset.date;
+  selected = (selected === key) ? null : key;
+  // 點到上／下個月的日子就順便換月
+  const d = new Date(key + 'T00:00:00');
+  if (selected && d.getMonth() !== view.getMonth()) view = new Date(d.getFullYear(), d.getMonth(), 1);
+  render();
+  if (selected) $('noteText').focus();
+});
+
+$('noteSave').onclick = () => {
+  const v = $('noteText').value.trim();
+  if (v) notes[selected] = v; else delete notes[selected];
+  $('noteState').textContent = saveNotes() ? '已儲存' : '存不進去（瀏覽器擋了網站資料？）';
+  render();
+};
+$('noteDel').onclick = () => {
+  delete notes[selected];
+  saveNotes();
+  $('noteText').value = '';
+  $('noteState').textContent = '已刪除';
+  render();
+};
+
+const shift = (dy, dm) => { view = new Date(view.getFullYear() + dy, view.getMonth() + dm, 1); render(); };
+$('prev').onclick = () => shift(0, -1);
+$('next').onclick = () => shift(0, 1);
+$('today').onclick = () => {
+  view = new Date(today.getFullYear(), today.getMonth(), 1);
+  selected = todayISO;
+  render();
+};
+
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA') {
+    if (e.key === 'Escape') { selected = null; render(); }
+    return;
+  }
+  const k = e.key;
+  if      (k === 'ArrowLeft')  shift(0, -1);
+  else if (k === 'ArrowRight') shift(0, 1);
+  else if (k === 'ArrowUp')    shift(-1, 0);
+  else if (k === 'ArrowDown')  shift(1, 0);
+  else if (k === 't' || k === 'T') $('today').onclick();
+  else if (k === 'Escape')     { selected = null; render(); }
+  else return;
+  e.preventDefault();
+});
+
+render();
+</script>
+</html>

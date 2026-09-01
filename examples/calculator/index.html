@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>計算機</title>
+<!--
+  skill-caddy 範例：純靜態 SPA
+  ===========================================================================
+  整包複製到內容根目錄底下（預設 D:\www\calculator\）就能用，不用 reload Caddy。
+  沒有 build、沒有相依套件、所有路徑都是相對的 —— 掛在哪個子路徑下都能跑。
+-->
+<style>
+:root{
+  --bg:#fff; --fg:#1f2328; --mut:#59636e; --line:#d1d9e0;
+  --card:#f6f8fa; --key:#fff; --keyfg:#1f2328;
+  --op:#ddf4ff; --opfg:#0969da; --eq:#1f883d; --eqfg:#fff; --fn:#eef1f4;
+  --err:#cf222e;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0d1117; --fg:#e6edf3; --mut:#9198a1; --line:#3d444d;
+    --card:#151b23; --key:#21262d; --keyfg:#e6edf3;
+    --op:#193b61; --opfg:#79c0ff; --eq:#238636; --eqfg:#fff; --fn:#2a3038;
+    --err:#ff7b72;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font:16px/1.5 -apple-system,"Segoe UI","Noto Sans TC",system-ui,sans-serif;
+  display:flex;justify-content:center;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+}
+main{width:100%;max-width:26rem;height:100%;display:flex;flex-direction:column;
+     padding:.75rem;gap:.6rem;min-height:0}
+
+/* ---- 顯示區 ---- */
+.screen{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:.9rem 1rem;text-align:right;flex:none}
+#expr,#out{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+           white-space:nowrap;overflow-x:auto;scrollbar-width:none}
+#expr::-webkit-scrollbar,#out::-webkit-scrollbar{display:none}
+#expr{color:var(--mut);font-size:1rem;min-height:1.5em}
+#out{font-size:2.1rem;font-weight:600;line-height:1.25;min-height:1.25em}
+#out.err{color:var(--err);font-size:1.05rem;font-weight:500}
+
+/* ---- 計算紀錄 ---- */
+.tape{flex:1;min-height:0;overflow-y:auto;border:1px solid var(--line);
+      border-radius:14px;background:var(--card);padding:.35rem}
+.tape:empty{border-style:dashed}
+.tape button{display:block;width:100%;text-align:right;background:none;border:0;
+             color:inherit;padding:.4rem .65rem;border-radius:9px;cursor:pointer;
+             font:.85rem/1.5 ui-monospace,"Cascadia Mono",Consolas,monospace}
+.tape button:hover{background:var(--fn)}
+.tape .e{color:var(--mut)}
+.tape .r{font-weight:600}
+
+/* ---- 按鍵 ---- */
+.pad{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;flex:none}
+.pad button{font:500 1.25rem/1 -apple-system,"Segoe UI",system-ui,sans-serif;
+            background:var(--key);color:var(--keyfg);border:1px solid var(--line);
+            border-radius:14px;height:3.4rem;cursor:pointer;user-select:none;
+            transition:transform .05s}
+.pad button:active{transform:scale(.95)}
+.pad .fn{background:var(--fn);font-size:1.05rem}
+.pad .op{background:var(--op);color:var(--opfg);font-weight:600}
+.pad .eq{background:var(--eq);color:var(--eqfg);grid-column:span 2;font-weight:600}
+.hint{font-size:.75rem;color:var(--mut);text-align:center;flex:none}
+kbd{background:var(--fn);border:1px solid var(--line);border-radius:5px;
+    padding:.05em .35em;font-size:.9em}
+</style>
+
+<main>
+  <div class="screen">
+    <div id="expr"></div>
+    <div id="out">0</div>
+  </div>
+
+  <div class="tape" id="tape"></div>
+
+  <div class="pad" id="pad">
+    <button class="fn" data-k="(">(</button>
+    <button class="fn" data-k=")">)</button>
+    <button class="fn" data-k="mod">mod</button>
+    <button class="fn" data-act="back">&#9003;</button>
+
+    <button class="fn" data-act="clear">C</button>
+    <button class="fn" data-act="neg">&plusmn;</button>
+    <button class="fn" data-k="^">x<sup>y</sup></button>
+    <button class="op" data-k="/">&divide;</button>
+
+    <button data-k="7">7</button>
+    <button data-k="8">8</button>
+    <button data-k="9">9</button>
+    <button class="op" data-k="*">&times;</button>
+
+    <button data-k="4">4</button>
+    <button data-k="5">5</button>
+    <button data-k="6">6</button>
+    <button class="op" data-k="-">&minus;</button>
+
+    <button data-k="1">1</button>
+    <button data-k="2">2</button>
+    <button data-k="3">3</button>
+    <button class="op" data-k="+">+</button>
+
+    <button data-k="0">0</button>
+    <button data-k=".">.</button>
+    <button class="eq" data-act="eval">=</button>
+  </div>
+
+  <div class="hint">鍵盤也能打 &middot; <kbd>Enter</kbd> 計算 &middot; <kbd>Esc</kbd> 清除</div>
+</main>
+
+<script>
+// ===========================================================================
+//  運算式求值：tokenize -> shunting-yard -> RPN
+//  刻意不用 eval()。使用者打進來的字串不要交給 JS 直譯器，這是習慣問題。
+// ===========================================================================
+const OPS = {
+  '+':   { p: 1, assoc: 'L', fn: (a, b) => a + b },
+  '-':   { p: 1, assoc: 'L', fn: (a, b) => a - b },
+  '*':   { p: 2, assoc: 'L', fn: (a, b) => a * b },
+  '/':   { p: 2, assoc: 'L', fn: (a, b) => a / b },
+  'mod': { p: 2, assoc: 'L', fn: (a, b) => a % b },
+  '^':   { p: 4, assoc: 'R', fn: (a, b) => a ** b },
+  'u-':  { p: 3, assoc: 'R', unary: true, fn: a => -a },
+};
+
+function tokenize(src) {
+  const out = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === ' ') { i++; continue; }
+    if (c >= '0' && c <= '9' || c === '.') {
+      let j = i;
+      while (j < src.length && (src[j] >= '0' && src[j] <= '9' || src[j] === '.')) j++;
+      const lit = src.slice(i, j);
+      if (lit.split('.').length > 2) throw new Error('小數點太多了');
+      out.push({ t: 'num', v: Number(lit) });
+      i = j;
+      continue;
+    }
+    if (src.startsWith('mod', i)) { out.push({ t: 'op', v: 'mod' }); i += 3; continue; }
+    if (c === '(' || c === ')') { out.push({ t: c }); i++; continue; }
+    if (OPS[c]) { out.push({ t: 'op', v: c }); i++; continue; }
+    throw new Error('看不懂「' + c + '」');
+  }
+  // 標出一元負號：出現在開頭、運算子後面、或左括號後面的減號
+  for (let k = 0; k < out.length; k++) {
+    if (out[k].t !== 'op' || out[k].v !== '-') continue;
+    const prev = out[k - 1];
+    if (!prev || prev.t === 'op' || prev.t === '(') out[k].v = 'u-';
+  }
+  return out;
+}
+
+function toRPN(tokens) {
+  const out = [], stack = [];
+  for (const tk of tokens) {
+    if (tk.t === 'num') { out.push(tk); continue; }
+    if (tk.t === '(') { stack.push(tk); continue; }
+    if (tk.t === ')') {
+      while (stack.length && stack[stack.length - 1].t !== '(') out.push(stack.pop());
+      if (!stack.length) throw new Error('括號沒對上');
+      stack.pop();
+      continue;
+    }
+    const o = OPS[tk.v];
+    while (stack.length) {
+      const top = stack[stack.length - 1];
+      if (top.t !== 'op') break;
+      const t = OPS[top.v];
+      if (t.p > o.p || (t.p === o.p && o.assoc === 'L')) out.push(stack.pop());
+      else break;
+    }
+    stack.push(tk);
+  }
+  while (stack.length) {
+    const top = stack.pop();
+    if (top.t === '(') throw new Error('括號沒對上');
+    out.push(top);
+  }
+  return out;
+}
+
+function evalRPN(rpn) {
+  const st = [];
+  for (const tk of rpn) {
+    if (tk.t === 'num') { st.push(tk.v); continue; }
+    const o = OPS[tk.v];
+    if (o.unary) {
+      if (st.length < 1) throw new Error('式子不完整');
+      st.push(o.fn(st.pop()));
+    } else {
+      if (st.length < 2) throw new Error('式子不完整');
+      const b = st.pop(), a = st.pop();
+      st.push(o.fn(a, b));
+    }
+  }
+  if (st.length !== 1) throw new Error('式子不完整');
+  return st[0];
+}
+
+const calc = src => evalRPN(toRPN(tokenize(src)));
+
+// 12 位有效數字，順便把浮點誤差的尾巴收掉（0.1+0.2 顯示 0.3）
+function fmt(n) {
+  if (Number.isNaN(n)) return '不是數字';
+  if (!Number.isFinite(n)) return n > 0 ? '∞' : '-∞';
+  const s = Number(n.toPrecision(12)).toString();
+  if (s.includes('e')) return s;
+  const [int, frac] = s.split('.');
+  const grouped = int.replace(/\B(?=(\d{3})+$)/g, ',');
+  return frac === undefined ? grouped : grouped + '.' + frac;
+}
+
+// ===========================================================================
+//  介面
+// ===========================================================================
+const $expr = document.getElementById('expr');
+const $out  = document.getElementById('out');
+const $tape = document.getElementById('tape');
+const KEY   = 'skill-caddy.calculator.history';
+
+let expr = '';
+let history = [];
+// localStorage 在無痕視窗、或瀏覽器擋了網站資料時會直接丟例外，一律包起來。
+try { history = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { /* 沒有就沒有 */ }
+
+function drawTape() {
+  $tape.textContent = '';
+  for (const h of history) {
+    const b = document.createElement('button');
+    const e = document.createElement('span'); e.className = 'e'; e.textContent = h.e + ' = ';
+    const r = document.createElement('span'); r.className = 'r'; r.textContent = h.r;
+    b.append(e, r);
+    b.onclick = () => { expr = h.e; draw(); };
+    $tape.appendChild(b);
+  }
+  $tape.scrollTop = $tape.scrollHeight;
+}
+
+function draw() {
+  $expr.textContent = expr;
+  $expr.scrollLeft = $expr.scrollWidth;
+  $out.classList.remove('err');
+  if (!expr) { $out.textContent = '0'; return; }
+  try {
+    $out.textContent = fmt(calc(expr));   // 邊打邊算
+  } catch {
+    $out.textContent = '…';          // 打到一半還不是完整的式子，很正常
+  }
+  $out.scrollLeft = $out.scrollWidth;
+}
+
+function push(k) { expr += k; draw(); }
+
+function evaluate() {
+  if (!expr) return;
+  let v;
+  try { v = calc(expr); }
+  catch (e) { $out.textContent = e.message; $out.classList.add('err'); return; }
+  history.push({ e: expr, r: fmt(v) });
+  history = history.slice(-30);
+  try { localStorage.setItem(KEY, JSON.stringify(history)); } catch { /* 存不了就算了 */ }
+  drawTape();
+  expr = String(v);
+  draw();
+}
+
+const ACT = {
+  clear: () => { expr = ''; draw(); },
+  back:  () => { expr = expr.replace(/(mod|.)$/, ''); draw(); },
+  neg:   () => {
+    expr = /^-\([^()]*\)$/.test(expr) ? expr.slice(2, -1)
+         : expr ? '-(' + expr + ')' : '-';
+    draw();
+  },
+  eval: evaluate,
+};
+
+document.getElementById('pad').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.act) ACT[b.dataset.act]();
+  else push(b.dataset.k);
+});
+
+addEventListener('keydown', e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key;
+  if (/^[0-9.+\-*/^()%]$/.test(k))          { push(k === '%' ? 'mod' : k); e.preventDefault(); }
+  else if (k === 'Enter' || k === '=')      { evaluate();  e.preventDefault(); }
+  else if (k === 'Backspace')               { ACT.back();  e.preventDefault(); }
+  else if (k === 'Escape' || k === 'Delete'){ ACT.clear(); e.preventDefault(); }
+});
+
+drawTape();
+draw();
+</script>
+</html>

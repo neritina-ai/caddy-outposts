@@ -1,0 +1,321 @@
+---
+name: caddy
+description: 管理這台機器上的 Caddy 網站 —— 掛新的 app、發佈靜態內容、新增可用 HTTP 觸發的 action、套用設定變更。當使用者要「架一個服務／網站」「把某個 port 開出去」「發佈一份文件或 demo」「加一個可以用手機按的動作」「改完設定要生效」時使用。
+---
+
+# caddy
+
+這台機器用 skill-caddy 管理網站。這份技能告訴你**怎麼改**、以及**哪些東西不能碰**。
+
+## 版面
+
+伺服器一定在 **`C:\Caddy`**。內容目錄的名稱也是固定的，只有磁碟機代號會變 ——
+預設 `D:`,沒有 D: 槽的機器會裝在別的槽：
+
+| 網址 | 目錄 | 是什麼 |
+|---|---|---|
+| `/` | `<槽>\www` | 站台根目錄 |
+| `/pub/` | `<槽>\www\public` | **公開，不需要密碼** |
+| `/p/` | `<槽>\projects` | |
+| `/w/` | `<槽>\workspaces` | |
+| `/a/` | `C:\Caddy\actions` | 用 WebDAV 編輯 action |
+| `/run` | action daemon | 控制面板 |
+
+**這台是哪個槽、還有哪些網址被佔用了，看這個檔：**
+
+```powershell
+Get-Content C:\Caddy\conf\manifest.json | ConvertFrom-Json
+```
+
+裡面的 `node.url_map` 就是**已經被佔用的網址對照表**，
+`node.content_root` 是內容根目錄的絕對路徑。新的 app 不要撞到那些前綴。
+不要猜，也不要靠翻設定檔反推。
+
+## 目錄
+
+    C:\Caddy\                 伺服器本身，不放網頁內容
+      conf\manifest.json      這台機器的事實來源      ← 先讀這個
+      Caddyfile               產品提供的骨架          ← 不要編輯
+      conf\                   caddyctl 產生的         ← 不要編輯
+      apps\*.caddy            app 路由                ← 你在這裡新增
+      actions\*.ps1           可觸發的動作            ← 你在這裡新增
+      logs\
+
+    <槽>:\www\                站台根目錄，對應網址 /   ← 看 manifest 的 content_root
+      public\                 對應 /pub —— **公開，不需要密碼**
+
+> **這台如果是 edge**（`roles` 含 `"edge"`）：它服務的是好幾個網域，所以 app 路由
+> 是一個網域一個資料夾 —— `C:\Caddy\apps\<label>\*.caddy`，實際路徑看 manifest 裡
+> `edge.domains.<label>.apps_dir`。`mode` 是 `proxy` 或 `unassigned` 的網域沒有
+> app 資料夾（前者的內容在被轉送的那台上，該去那台做）。
+
+---
+
+## 掛一個新的 app
+
+app = 跑在本機某個埠上的服務，掛在一個路徑下面。
+
+**1. 寫 `C:\Caddy\apps\<名稱>.caddy`：**
+
+```
+redir /myapp /myapp/ 308
+handle_path /myapp/* {
+	reverse_proxy 127.0.0.1:3000
+}
+```
+
+**2. 套用：**
+
+```
+POST http://127.0.0.1/run/caddy-reload
+```
+
+（有 caddyctl 可用的話，`node <skill-caddy>\src\caddyctl.mjs reload` 一樣，
+而且不必記這台是哪個埠。）
+
+網址就是 `http://<這台>/myapp`。刪掉那個檔再 reload 就移除。
+
+不用改 `Caddyfile`，不用管檔案順序 —— Caddy 是依**路徑精確度**排序 `handle`，
+不是依檔名或行號，所以 `/myapp/deep/*` 一定排在 `/myapp/*` 前面。
+
+**`redir /myapp /myapp/ 308` 那一行不要省。** 少了尾斜線，頁面裡的相對路徑
+（`api/x`）會解析成 `/api/x` 而不是 `/myapp/api/x`。這種壞法很難查，
+因為首頁看起來是好的。
+
+**app 要能在子路徑下運作。** `handle_path` 會把前綴剝掉，所以服務自己看到的路徑
+是 `/`。如果那個服務寫死了以 `/` 為根（絕對路徑的 `/static/...`、`/api/...`），
+掛在 `/myapp` 底下會壞掉。要嘛讓它支援 base path，要嘛給它自己的埠再由使用者
+決定怎麼對外。
+
+**服務只綁 `127.0.0.1`，不要綁 `0.0.0.0`。** TLS、認證、log 都在 Caddy 這一層做，
+app 不必自己重做一遍，也不該讓人繞過。
+
+---
+
+## 發佈靜態內容
+
+**要密碼保護的**（大多數情況）：放進內容根目錄，馬上就能看，不用 reload。
+
+    D:\www\notes\index.html   ->   /notes/
+
+（`D:` 是預設值；這台實際是哪個槽看 manifest 的 `node.content_root`。）
+
+`.md` 檔在瀏覽器裡會自動渲染成 HTML；加 `?raw=1` 看原始碼。
+
+**公開、不需要密碼的**：放進內容根目錄底下的 `public\`,網址是 `/pub/...`。
+那個目錄**一定**是 `<content_root>\public`,不會被設定成別的地方。
+
+> ⚠ **放進 `public` 等於對整個網際網路公開。** 那是整個站台唯一不需要密碼的路徑，
+> 存在的理由是有些客戶端不會帶認證憑證（例如聊天軟體內嵌的 webview）。
+> 只放確定可以公開的東西。那條路徑是唯讀的，而且不出目錄列表 ——
+> 一定要有 `index.html`。
+
+---
+
+## 某個目錄要另外一組密碼
+
+例如整個網站是公開的，但底下有一個目錄只給特定的人看。
+
+**用工具，不要自己寫 `.caddy` 檔**：
+
+    node D:\projects\skill-caddy\src\caddyctl.mjs auth set --path /reports/* --password police:123
+    node D:\projects\skill-caddy\src\caddyctl.mjs auth list
+    node D:\projects\skill-caddy\src\caddyctl.mjs auth remove --path /reports/*
+
+（caddyctl 的位置看 manifest 沒有寫 —— 它在使用者放 repo 的地方，
+問使用者，或找 `caddyctl.mjs`。）
+
+`--password` 的格式是 `[帳號:]<密碼>`：沒有冒號就用這個站的名字當帳號。
+瀏覽器會問帳號和密碼兩格 —— HTTP Basic Auth 的帳號是協定的一部分，拿不掉。
+
+改完要套用 —— **加 `--reload` 就順便做掉了**：
+
+    node D:\projects\skill-caddy\src\caddyctl.mjs auth set --path /reports/* --password police:123 --reload
+
+**這台是 edge 的話要加 `--name <網域 label>`**，因為 edge 上有好幾個站。
+node 只有一個站，可以省。
+
+規則存在 `C:\Caddy\conf\auth\<站>\`，一條路徑一個檔。**不要手動編輯那些檔**，
+也不要把密碼寫進 `C:\Caddy\conf\sites\*.caddy` —— 那些檔案由 caddyctl 產生，
+下次執行會被整個覆蓋，寫進去的密碼會安靜消失。
+
+> 這台如果整站已經有密碼，再加路徑密碼會變成「兩組都要過」，不是「改用這一組」。
+> 想讓某個區域用不同的密碼，比較乾淨的做法是請使用者另開一個網域。
+
+---
+
+## 新增一個 action
+
+action = 可以用 HTTP 觸發的主機腳本。使用者可以在瀏覽器面板上按，也能用手機書籤。
+
+**寫 `C:\Caddy\actions\<名稱>.ps1`：**
+
+```powershell
+# @title   重啟我的服務
+# @desc    停掉再拉起來
+# @group   myapp
+# @confirm
+
+Restart-Service myservice
+"done"
+exit 0
+```
+
+丟進去**立即生效，不用 reload**。`GET /run` 會列出全部。
+
+### 四條規則
+
+1. **會造成破壞或不可逆的一定要加 `@confirm`。** 否則瀏覽器預抓、聊天軟體展開
+   連結預覽、Wi-Fi 入口偵測都可能把它觸發掉。加了之後，用 GET 開網址只會出確認頁，
+   真正執行要送 POST。
+
+2. **含非 ASCII 字元的 `.ps1` 必須存成 UTF-8 with BOM。** Windows PowerShell 5.1
+   讀沒有 BOM 的 UTF-8 會當成系統 ANSI，中文註解裡的破折號之類會讓腳本
+   **安靜地解析失敗** —— exit code 還是 0，但後半段根本沒執行。
+
+3. **底線開頭的檔案不會被列成 action**，可以拿來放範本或共用函式。
+
+4. **需要「使用者身分」的指令要走橋接。** actiond 是以 LOCAL SYSTEM 執行的服務，
+   裝在使用者層級的工具（`%APPDATA%` 底下的 npm 全域套件、使用者的排程工作）
+   用 SYSTEM 跑會讀到錯的 profile，甚至根本找不到執行檔：
+
+   ```powershell
+   . "$PSScriptRoot\_userbridge.ps1"
+   Invoke-AsUser 'mytool restart'
+   exit $global:UserExitCode
+   ```
+
+   這需要使用者處於登入狀態。
+
+### 用 action 啟動背景服務
+
+可以，`Start-Process` 就好，HTTP 請求不會被卡住（actiond 是以「腳本行程結束」
+為準回應的，不是等管線關閉 —— 因為 Windows 的子行程會繼承 stdout handle，
+等管線就會卡到 timeout）。
+
+要注意的是**別只靠 pid 檔判斷有沒有在跑**：機器重開、行程自己掛掉，pid 檔都還會
+留著，而且 Windows 會回收 PID 再配給別的程式。要再確認那個 PID 真的是你的程式：
+
+```powershell
+$p = Get-Process -Id $id -ErrorAction SilentlyContinue
+if ($p -and $p.ProcessName -eq 'node') { <# 真的在跑 #> }
+```
+
+要開機自動啟動、掛掉自動重啟的話，別用 action —— 用 `nssm` 註冊成 Windows 服務
+（`C:\Caddy\nssm.exe`，caddy 和 actiond 自己就是這樣裝的），action 只負責啟停。
+
+---
+
+## 套用設定變更
+
+| 動作 | 需要 reload？ |
+|---|---|
+| 內容檔案（`<槽>\www` 底下的東西） | 不用 |
+| 新增／修改 action | 不用 |
+| 新增／修改／刪除 `C:\Caddy\apps\*.caddy` | **要** |
+
+```
+POST /run/caddy-validate    只檢查語法，不套用
+POST /run/caddy-reload      先 validate，通過才套用（優雅重載，不斷線）
+POST /run/caddy-rollback    還原上一份可用的設定
+POST /run/caddy-status      版本、服務狀態、是否有未套用的變更
+```
+
+**用 caddyctl 的話更簡單 —— 改設定的指令加 `--reload` 就順便套用了：**
+
+```powershell
+node <skill-caddy>\src\caddyctl.mjs auth set --path /reports/* --password police:123 --reload
+```
+
+改好幾個地方就只在**最後一個**指令加 `--reload`。不確定還要改幾次就都不加，
+最後單獨跑：
+
+```powershell
+node <skill-caddy>\src\caddyctl.mjs reload
+```
+
+> `/run` 的網址會因為角色而不同：node 是 `http://127.0.0.1/run/...`（站台設定裡
+> 有一條 `/run` 轉給 actiond），**edge 沒有那條**，要直接打
+> `http://127.0.0.1:9001/run/...`。`caddyctl reload` 從 manifest 判斷，
+> 所以不用自己記 —— 也不會因為記錯而以為 reload 壞掉。
+
+**你負責的是這一台。** 別台上的設定請使用者去那台處理，或交給那台上的 AI ——
+需要別台配合的事（例如把一個網域指到這台）不是你的工作。
+
+> 技術上 `/run` 在區網內是打得到的（那讓「手機經過 edge 按 action」成立），
+> 但那不是給你跨機器操作用的。改別台的設定而不讓那台上的人知道，
+> 是製造事故的好方法。
+
+**改完設定一定要先 validate。** `caddy-reload` 本身會先驗證，validate 失敗時
+完全不動作 —— 而且就算檔案已經寫壞，正在跑的 Caddy 用的是記憶體裡的舊設定，
+站台不會掛掉。所以寫壞是救得回來的。
+
+### 更新 skill-caddy 之後要重跑一次
+
+`C:\Caddy\conf\` 底下是**產生出來的快照**。`git pull` 拿到新版之後那些檔案不會
+自己跟著變，也不會有任何錯誤訊息 —— 舊版的行為會安靜地繼續跑。更新完就重跑：
+
+```powershell
+node <skill-caddy>\src\caddyctl.mjs node init --reload
+```
+
+沒帶的旗標沿用現有設定，所以重跑是安全的。這台原本是 static 的話，記得把
+`--static` 一起帶上，否則會變回完整功能。
+
+edge 那台是另一回事（`edge set` 是取代，每個網域要重打完整指令），
+但那是 edge 上的人的事，不是你的。
+
+---
+
+## 不要做的事
+
+* **不要編輯 `C:\Caddy\Caddyfile` 或 `C:\Caddy\conf\`。** 前者是產品的骨架，
+  後者是 `caddyctl` 產生的 —— 手動改了會在下次執行時被蓋掉。
+  要改的話用 skill-caddy 的 CLI（`node init` 可以重跑，沒寫的旗標沿用現有設定）：
+
+  ```powershell
+  node <skill-caddy>\src\caddyctl.mjs node init --port 9500
+  node <skill-caddy>\src\caddyctl.mjs reload
+  ```
+
+  node 能調的只有 `--drive`（整組內容目錄換一個槽）和 `--port`（actiond 的埠）——
+  目錄名稱是固定的。edge 的網域是 `caddyctl edge set / edge remove`。
+
+  **想把某個別的目錄開出來，不要動這些** —— 寫一個 `apps\*.caddy` 就好，
+  那是設計上留給你的做法。
+* **不要改 `C:\Caddy` 這個路徑。** 整套系統就靠它當固定點，包括這份技能。
+* **不要把 Caddy 的 admin 端點（2019）綁到 loopback 以外。** 它沒有任何認證，
+  誰連得到誰就能叫 Caddy 載入任意設定。
+* **不要把 actiond 的埠（預設 9001）開到 loopback 以外**，除非同時設好
+  `ACTION_TOKEN` 與 `ACTION_ALLOW`。
+* **不要在 reverse proxy 上改 `Host` header。** WebDAV 的 `MOVE`／`COPY` 會拿
+  `Destination` 的 host 去比對後端看到的 `r.Host`，改了就 502 ——
+  等於把「重新命名檔案」關掉。
+* **不要把祕密放進 `public\`。**
+
+---
+
+## 除錯
+
+```
+POST /run/caddy-status                    先看這個
+POST /run/caddy-validate                  設定語法有沒有問題
+C:\Caddy\logs\access.log                  誰打了什麼
+C:\Caddy\logs\actiond.log                 action daemon 的問題
+C:\Caddy\logs\caddy.log                   Caddy 服務本身的問題
+```
+
+（log 位置以 manifest 的 `log_dir` 為準，預設就是 `C:\Caddy\logs`。）
+
+**404 但檔案明明在**：路徑撞到 `url_map` 裡的東西了，或 app 的 `.caddy` 檔還沒
+reload。
+
+**502**：Caddy 還在，只是後面那個服務沒起來 —— 去看那個 app 自己的 log。
+
+**WebDAV 客戶端可以讀不能改名**：中間有人改了 `Host` header。
+
+**`.md` 在編輯器裡變成 HTML**：那個客戶端送了 `Accept: text/html`。
+用 `?raw=1`，或改用會送 `Accept: */*` 的客戶端。
+
+**action 回 exit 0 但沒有輸出**：那個 `.ps1` 八成是沒有 BOM 的 UTF-8，
+中文把解析弄壞了。存成 UTF-8 with BOM。

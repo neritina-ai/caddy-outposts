@@ -1,0 +1,13 @@
+{
+  "name": "skill-caddy",
+  "version": "0.2.0",
+  "description": "Turn a set of Windows machines into a small self-hosted web cluster, with a /caddy skill for the AI working on them",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "caddyctl": "src/caddyctl.mjs"
+  },
+  "scripts": {
+    "caddyctl": "node src/caddyctl.mjs"
+  }
+}

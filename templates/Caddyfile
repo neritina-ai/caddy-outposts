@@ -1,0 +1,133 @@
+# =============================================================================
+#  Caddyfile 骨架 —— 這個檔是 skill-caddy 提供的，不要編輯。
+#
+#  它只做兩件事：定義產品的固定邏輯（下面那些 snippet），然後把產生出來的
+#  設定片段 import 進來。所有跟這台機器有關的東西都在 conf/ 底下，
+#  由 fleet 設定產生。
+#
+#      conf/global.caddy     全域選項（ACME、DNS…）
+#      conf/sites/*.caddy    一個站一個檔
+#      apps/*.caddy          手寫／AI 寫的 app 路由（由 conf/sites 裡的 node 站 import）
+#
+#  import 的相對路徑是以「這個檔案的位置」為基準，不是工作目錄，
+#  所以整包目錄搬到哪裡都能跑。
+#
+#  重載設定：caddy reload --config <這個檔> --adapter caddyfile
+#            或呼叫 action：POST /run/caddy-reload
+# =============================================================================
+{
+	import conf/global.caddy
+}
+
+# -----------------------------------------------------------------------------
+#  sitelog <log 檔完整路徑>
+#
+#  一定要把「整條路徑」當參數傳。不要在 snippet 裡用 {args[0]} 去組字串 ——
+#  Caddyfile 的 snippet 參數只在整個 token 的位置代換，不會進到引號字串裡面，
+#  結果會原樣留著 {args[0]}，然後在 provision 階段炸成
+#  "unrecognized placeholder"。（實測過。）
+# -----------------------------------------------------------------------------
+(sitelog) {
+	log {
+		output file {args[0]} {
+			roll_size 20MiB
+			roll_keep 5
+		}
+		format console
+	}
+}
+
+# -----------------------------------------------------------------------------
+#  fsdav <實體路徑> <URL 前綴> <markdown 樣板所在目錄>
+#
+#  一個目錄 = 可瀏覽的靜態站 + Markdown 渲染 + 可讀寫的 WebDAV，同一個網址。
+#  前綴傳 "" 就是掛在站台根目錄。
+#
+#  三個關鍵，改之前先看：
+#
+#  1. 用 route 而不是靠 Caddy 的預設 directive 排序。預設排序會把
+#     uri strip_prefix 排在 webdav 前面，於是 webdav 的 prefix 找不到前綴可剝，
+#     整組回 404。route 裡面是照書寫順序執行的。
+#
+#  2. 前綴一定要交給 webdav 自己的 prefix，不能用 handle_path 事先剝掉。
+#     handle_path 只改 r.URL.Path，不會動 MOVE/COPY 的 Destination header，
+#     結果在 WebDAV 客戶端裡「重新命名檔案」會 403。
+#
+#  3. .md 只在瀏覽器來要（Accept: text/html）時才渲染。否則 WebDAV 客戶端
+#     GET 一個 .md 會拿到 HTML，一存檔就把原稿蓋掉。?raw=1 可強制拿原始檔。
+# -----------------------------------------------------------------------------
+(fsdav) {
+	route {
+		# 非 GET/HEAD 的方法交給 WebDAV
+		@dav method PROPFIND PROPPATCH MKCOL COPY MOVE LOCK UNLOCK OPTIONS PUT DELETE
+		webdav @dav {
+			root {args[0]}
+			prefix {args[1]}
+		}
+
+		# 以下是 GET/HEAD：改由 file_server 處理，這時才把前綴剝掉
+		uri strip_prefix {args[1]}
+		root * {args[0]}
+
+		@mdview {
+			method GET HEAD
+			path *.md *.markdown
+			not query raw=*
+			header Accept *text/html*
+		}
+		handle @mdview {
+			rewrite * /_md.html
+			root * {args[2]}
+			templates
+			file_server
+		}
+
+		file_server browse
+	}
+}
+
+# -----------------------------------------------------------------------------
+#  pubro <實體路徑> <URL 前綴>
+#
+#  公開唯讀。這是整個站台唯一不需要密碼的路徑（edge 會把它排除在認證之外），
+#  因為有些客戶端不會帶認證憑證（例如聊天軟體內嵌的 webview）。
+#
+#  所以：**放進這個目錄的東西 = 對整個網際網路公開**。
+#  GET/HEAD 以外一律 405，而且不出目錄列表 —— 一定要有 index.html。
+# -----------------------------------------------------------------------------
+(pubro) {
+	route {
+		@notread not method GET HEAD
+		respond @notread "read-only" 405
+		uri strip_prefix {args[1]}
+		root * {args[0]}
+		file_server
+	}
+}
+
+# -----------------------------------------------------------------------------
+#  webroot <實體路徑>
+#
+#  給 edge 自己服務的靜態站用：目錄列表、少尾斜線自動導正、.md 交給
+#  同目錄下的 md.html 樣板渲染。
+# -----------------------------------------------------------------------------
+(webroot) {
+	root * {args[0]}
+	@check_slash {
+		not path */
+		file {path}/
+	}
+	redir @check_slash {path}/ 308
+	file_server browse
+	@md {
+		path *.md
+		file
+	}
+	handle @md {
+		templates
+		rewrite * /md.html
+	}
+}
+
+# =============================================================================
+import conf/sites/*.caddy

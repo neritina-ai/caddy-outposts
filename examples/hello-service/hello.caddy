@@ -1,0 +1,19 @@
+# hello-service 的路由 —— 複製到 C:\Caddy\apps\hello.caddy
+#
+# 改完要套用：POST /run/caddy-reload
+# 刪掉這個檔再 reload 就移除。
+
+# 少了尾斜線一定要導正。
+# 在 /hello 上，頁面裡的相對路徑 "api/hits" 會解析成 /api/hits（站台根目錄）；
+# 在 /hello/ 上才會解析成 /hello/api/hits。少這一行，app 會以很難查的方式壞掉。
+redir /hello /hello/ 308
+
+handle_path /hello/* {
+	# handle_path 會把 /hello 前綴剝掉，所以服務自己看到的路徑是 /。
+	# app 因此不必知道自己被掛在哪個路徑下 —— 前提是它不要用絕對路徑。
+	#
+	# （注意：WebDAV 不能這樣用。handle_path 不會改 MOVE/COPY 的 Destination
+	#   header，所以 WebDAV 一定要用 webdav 自己的 prefix。這裡是普通的 HTTP
+	#   app，沒這個問題。）
+	reverse_proxy 127.0.0.1:3100
+}
