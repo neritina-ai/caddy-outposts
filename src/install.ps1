@@ -173,7 +173,11 @@ if ($contentRoot) {
         if (Test-Path $f.d) {
             Say ('  ' + $f.d + ' 已存在，保留不覆蓋')
         } else {
-            $txt = Get-Content (Join-Path $repo $f.s) -Raw
+            # 樣板是 UTF-8 沒有 BOM，一定要明講編碼：PS 5.1 的 Get-Content 沒有
+            # -Encoding 就用系統 ANSI 讀（這幾台是 cp950），中文會被 Big5 解成假字，
+            # emoji 更直接變成 ?。寫出去照樣是合法的 UTF-8，所以事後看不出是哪裡壞的。
+            # 用 ReadAllText 跟下面的 WriteAllText 對齊，不靠任何預設值。
+            $txt = [IO.File]::ReadAllText((Join-Path $repo $f.s), [Text.UTF8Encoding]::new($false))
             $txt = $txt -replace '__MACHINE__', $Machine
             [IO.File]::WriteAllText($f.d, $txt, [Text.UTF8Encoding]::new($false))
             Say ('  ' + $f.d)

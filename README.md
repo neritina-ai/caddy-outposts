@@ -702,6 +702,50 @@ node src\caddyctl.mjs edge set --name <label> ... --reload
 `conf\auth\` 底下的個別路徑密碼、和 `apps\` 底下的 drop-in 不受影響 ——
 那些是 `import` 進去的獨立檔案，不會被重新產生的過程蓋掉。
 
+### 首頁樣板同理 —— 但要自己覆蓋
+
+`templates\www\` 底下那三個檔（`index.html`、`_md.html`、`public\index.html`）
+也是快照，而且比 `conf\` 更黏：`install.ps1` 只在**目的地不存在**時才寫，
+已經有了就印「已存在，保留不覆蓋」跳過。那是故意的 —— 首頁是你的內容，
+安裝程式不該把你改過的東西蓋掉。
+
+代價是重跑 `install.ps1` 永遠不會更新它們，重裝也一樣（`uninstall.ps1` 不刪
+網站內容）。要換成新版樣板得自己覆蓋。不需要管理員，在 repo 目錄裡跑：
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$repo  = (Get-Location).Path
+$m     = Get-Content 'C:\Caddy\conf\manifest.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+if (-not $m.node) { throw '這台沒有 node 角色，沒有內容目錄可以更新。' }
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+
+@(
+    @{ s = 'templates\www\index.html';        d = (Join-Path $m.node.content_root 'index.html') }
+    @{ s = 'templates\www\_md.html';          d = (Join-Path $m.node.content_root '_md.html')   }
+    @{ s = 'templates\www\public\index.html'; d = (Join-Path $m.node.public_dir   'index.html') }
+) | ForEach-Object {
+    if (Test-Path $_.d) { Copy-Item $_.d ($_.d + '.' + $stamp + '.bak') }
+    # 讀樣板一定要明講 UTF-8，不能用 Get-Content 的預設值 —— 理由見下面那則
+    $txt = [IO.File]::ReadAllText((Join-Path $repo $_.s), [Text.UTF8Encoding]::new($false))
+    $txt = $txt -replace '__MACHINE__', $env:COMPUTERNAME
+    [IO.File]::WriteAllText($_.d, $txt, [Text.UTF8Encoding]::new($false))
+    Write-Host ('  ' + $_.d)
+}
+```
+
+覆蓋前會在原地留一份 `.<時間戳>.bak`。不用 reload —— 這些是靜態檔，Caddy 直接
+讀磁碟，存完重新整理瀏覽器就好。
+
+`/pub/` 是唯讀掛載（`pubro`），從 HTTP 寫會回 405，所以這件事只能在那台機器上做，
+不能靠 WebDAV 遠端補。
+
+> **首頁如果是一片亂碼，就是這一段沒做對。** 樣板 .html 是 UTF-8 **沒有 BOM**
+> （`.gitattributes` 只對 `.ps1` 強制 BOM），而 PowerShell 5.1 的 `Get-Content`
+> 少了 `-Encoding` 會拿系統 ANSI 去讀。中文 Windows 是 cp950，於是整份被 Big5
+> 解成假字、emoji 直接變成 `?`，再原樣寫出一個「格式完全正確」的 UTF-8 檔案。
+> 頁面上看得到壞掉，檔案本身卻挑不出毛病，而且**不可逆** —— 原字在解碼那一步
+> 就丟了，只能拿樣板重新產生一次。`install.ps1` 早期版本踩過這個坑。
+
 ---
 
 ## 移除（或重裝）
