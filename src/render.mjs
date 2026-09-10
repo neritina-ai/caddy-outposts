@@ -220,6 +220,188 @@ export function renderEdgeSite(label, d) {
   throw new Error('不認識的 mode "' + d.mode + '"');
 }
 
+// ---------------------------------------------------------------- 控制面板
+//
+// **控制面板不住在內容根目錄裡。**
+//
+// 原本它是 D:\www\index.html —— 也就是說「這台的首頁」跟「使用者自己的首頁」
+// 是同一個檔，兩者只能活一個。使用者放自己的 index.html 就等於把面板刪掉，
+// 而且看起來像產品壞了，不像自己覆蓋了什麼。（實際踩過兩次。）
+//
+// 現在面板產生到 conf\_panel.html，掛在 /panel。內容根目錄從此完全是使用者的：
+// 放什麼都行，不放就是目錄列表。
+//
+// 順帶一個好處：面板改成從設定算出來，就不會說謊了 —— static 的機器沒有
+// /p/ /w/ /a/，沒設家目錄的機器沒有 /c/，這些以前在靜態樣板裡是寫死的。
+const CSS = [
+  ':root{--bg:#fff;--fg:#1f2328;--mut:#59636e;--line:#d1d9e0;--card:#f6f8fa;--link:#0969da}',
+  '@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#3d444d;--card:#151b23;--link:#4493f8}}',
+  '*{box-sizing:border-box}',
+  'body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,"Segoe UI","Noto Sans TC",system-ui,sans-serif}',
+  'main{max-width:40rem;margin:0 auto;padding:2rem 1rem 4rem}',
+  'h1{font-size:1.4rem;margin:0 0 .2em}',
+  '.sub{color:var(--mut);font-size:.9rem;margin-bottom:2rem}',
+  'a.card{display:flex;gap:1rem;align-items:center;background:var(--card);border:1px solid var(--line);',
+  'border-radius:12px;padding:1rem;margin-bottom:.7rem;text-decoration:none;color:inherit}',
+  'a.card:active{transform:translateY(1px)}',
+  '.ico{font-size:1.6rem;line-height:1}',
+  '.n{font-weight:600}',
+  '.d{font-size:.85rem;color:var(--mut)}',
+  'code{background:var(--card);border:1px solid var(--line);padding:.1em .4em;border-radius:6px;font-size:.85em}',
+  'footer{margin-top:2.5rem;font-size:.8rem;color:var(--mut);line-height:1.8}',
+];
+
+const card = (href, ico, name, desc) =>
+  '  <a class="card" href="' + href + '">' +
+  '<span class="ico">' + ico + '</span>' +
+  '<span><span class="n">' + name + '</span><br><span class="d">' + desc + '</span></span></a>';
+
+export function renderPanel(machine, n) {
+  const L = nodeLayout(n.drive);
+  const cards = [];
+
+  // 內容根目錄排第一 —— 那是使用者的地方，面板只是客人。
+  cards.push(card('/', '🏠', '/', win(L.content_root) + ' —— 你的內容根目錄' +
+    (n.static ? '（唯讀）' : '，可用 WebDAV 讀寫')));
+
+  if (!n.static) {
+    const desc = { p: 'projects', w: 'workspaces' };
+    for (const [prefix, root] of Object.entries(L.mounts)) {
+      cards.push(card('/' + prefix + '/', prefix === 'p' ? '📦' : '🗂️', '/' + prefix + '/',
+        (desc[prefix] || prefix) + ' — ' + win(root) + '，瀏覽 / .md 渲染 / WebDAV 讀寫'));
+    }
+  }
+
+  cards.push(card('/run', '⚡', '/run', '執行主機上的動作'));
+
+  if (!n.static) {
+    cards.push(card('/' + L.actions_mount + '/', '📝', '/' + L.actions_mount + '/',
+      win(CADDY_DIR + '/actions') + ' —— 編輯 action 本身'));
+  }
+
+  if (n.home) {
+    cards.push(card('/c/', '⚙️', '/c/', '這台裝了哪些工具，以及它們的設定檔'));
+  }
+
+  cards.push(card('/pub/', '🌐', '/pub/', '對外公開唯讀，<b>不需要密碼</b>'));
+
+  return [
+    '<!doctype html>',
+    '<html lang="zh-Hant">',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<title>' + machine + '</title>',
+    '<style>',
+    ...CSS,
+    '</style>',
+    '<main>',
+    '  <h1>' + machine + '</h1>',
+    '  <div class="sub">瀏覽 · Markdown 渲染 · WebDAV 讀寫，同一組網址</div>',
+    '',
+    ...cards,
+    '',
+    '  <footer>',
+    '    這一頁是 caddyctl 產生的（<code>' + win(CADDY_DIR + '/conf/_panel.html') + '</code>），',
+    '    每次 <code>node init</code> 會重寫 —— 不要手動編輯。<br>',
+    '    <code>' + win(L.content_root) + '</code> 是你的：放自己的 <code>index.html</code>',
+    '    不會影響這一頁。<br>',
+    '    每個網址實際對應到哪個目錄，看 <code>' + win(CADDY_DIR + '/conf/manifest.json') + '</code>',
+    '    的 <code>url_map</code>。<br>',
+    '    看 .md 原始碼：網址後面加 <code>?raw=1</code>',
+    '  </footer>',
+    '</main>',
+    '',
+  ].join('\n');
+}
+
+// ---------------------------------------------------------------- /c/ 設定檔
+//
+// 把散在家目錄各處的設定檔集中成一個網址，並且**改名**成看得懂的名字 ——
+// 三個工具的設定檔都叫 settings.json，擺在一起是分不出來的。
+//
+// 清單就是這張表，沒有別的機制：一行 = 一個會出現在 /c/ 的檔案。
+//
+// **這張表決定了什麼東西會被公開。** 沒有排除邏輯，也刻意不做 ——
+// 要一個檔案不出現在 /c/，就是不要把它寫進這裡。所以加行之前先想一下：
+// 這個檔裡有沒有金鑰？.npmrc、.aws/credentials、.ssh/id_*、
+// .claude/.credentials.json 這類純憑證檔就是為此不在表上。
+// （openclaw.json 本身可能含金鑰，它在表上是使用者明確要求的取捨。）
+//
+// 路徑一律是**家目錄底下的相對路徑**，用正斜線。猜錯的路徑不會壞掉，
+// 只會安靜地不顯示 —— 所以表可以寫寬一點，涵蓋還沒裝的工具。
+export const CONFIG_FILES = [
+  // 顯示名                相對於家目錄的真實路徑                        說明
+  ['openclaw.json',      '.openclaw/openclaw.json',                    'OpenClaw'],
+  ['claude.json',        '.claude/settings.json',                      'Claude Code'],
+  ['claude-local.json',  '.claude/settings.local.json',                'Claude Code（這台專用）'],
+  ['claude.md',          '.claude/CLAUDE.md',                          'Claude Code 的全域指示'],
+  ['codex.toml',         '.codex/config.toml',                         'Codex CLI'],
+  ['gemini.json',        '.gemini/settings.json',                      'Gemini CLI'],
+  ['continue.json',      '.continue/config.json',                      'Continue'],
+  ['aider.yml',          '.aider.conf.yml',                            'Aider'],
+  ['git.config',         '.gitconfig',                                 'Git'],
+  ['vscode.json',        'AppData/Roaming/Code/User/settings.json',    'VS Code'],
+  ['powershell.ps1',     'Documents/PowerShell/Microsoft.PowerShell_profile.ps1', 'PowerShell 7 profile'],
+  ['powershell5.ps1',    'Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1', 'Windows PowerShell 5.1 profile'],
+];
+
+// 把 "a/b/c.json" 拆成「所在目錄」與「/檔名」—— cfgfile snippet 要這兩個。
+// 沒有斜線的（.gitconfig）目錄就是家目錄本身。
+export function splitConfigPath(home, rel) {
+  const i = rel.lastIndexOf('/');
+  return i < 0
+    ? { dir: home, file: '/' + rel }
+    : { dir: home + '/' + rel.slice(0, i), file: '/' + rel.slice(i + 1) };
+}
+
+// /c/ 的索引頁。
+//
+// 關鍵在 fileExists 是**每次瀏覽即時判斷**的（Caddy 的 templates 模組），
+// 不是產生設定當下的快照。所以之後在這台裝了新工具，不必 reload 也不必重跑
+// caddyctl，/c/ 自己就會多一行。這正好避開這個專案其他地方的快照問題。
+//
+// fileExists 的相對基準是 templates 的 root，設定裡會指到家目錄。
+export function renderConfigIndex(machine) {
+  const rows = CONFIG_FILES.map(([name, rel, desc]) =>
+    '{{if fileExists ' + JSON.stringify(rel) + '}}<a class="card" href="/c/' + name + '">' +
+    '<span><span class="n">' + name + '</span><br>' +
+    '<span class="d">' + desc + ' —— <code>~/' + rel + '</code></span></span></a>{{end}}'
+  );
+  return [
+    '<!doctype html>',
+    '<html lang="zh-Hant">',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<title>' + machine + ' 的設定檔</title>',
+    '<style>',
+    ':root{--bg:#fff;--fg:#1f2328;--mut:#59636e;--line:#d1d9e0;--card:#f6f8fa;--link:#0969da}',
+    '@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#3d444d;--card:#151b23;--link:#4493f8}}',
+    '*{box-sizing:border-box}',
+    'body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,"Segoe UI","Noto Sans TC",system-ui,sans-serif}',
+    'main{max-width:40rem;margin:0 auto;padding:2rem 1rem 4rem}',
+    'h1{font-size:1.4rem;margin:0 0 .2em}',
+    '.sub{color:var(--mut);font-size:.9rem;margin-bottom:2rem}',
+    'a.card{display:block;background:var(--card);border:1px solid var(--line);',
+    'border-radius:12px;padding:.8rem 1rem;margin-bottom:.6rem;text-decoration:none;color:inherit}',
+    '.n{font-weight:600}',
+    '.d{font-size:.85rem;color:var(--mut)}',
+    'code{background:var(--bg);border:1px solid var(--line);padding:.1em .4em;border-radius:6px;font-size:.85em}',
+    'footer{margin-top:2.5rem;font-size:.8rem;color:var(--mut);line-height:1.8}',
+    '</style>',
+    '<main>',
+    '  <h1>' + machine + ' 的設定檔</h1>',
+    '  <div class="sub">只列出這台實際存在的檔案 —— 這份清單就是「這台裝了哪些工具」。</div>',
+    ...rows.map((r) => '  ' + r),
+    '  <footer>',
+    '    名稱是顯示用的：三個工具的設定檔都叫 <code>settings.json</code>，擺在一起分不出來，所以在這裡改了名。<br>',
+    '    可以直接用 WebDAV 編輯（PUT）。改完通常還要重啟對應的服務，看 <a href="/run">/run</a>。<br>',
+    '    這裡只列設定，不列憑證。清單在 <code>render.mjs</code> 的 <code>CONFIG_FILES</code>。',
+    '  </footer>',
+    '</main>',
+    '',
+  ].join('\n');
+}
+
 // ---------------------------------------------------------------- node 的站
 export function renderNodeSite(n) {
   const L = nodeLayout(n.drive);
@@ -250,6 +432,16 @@ export function renderNodeSite(n) {
   //
   // 真正不可信的是網際網路那一側，所以擋在那裡：**沒有密碼的 edge 站台不會把
   // /run 轉過來**（見 renderEdgeSite）。要遠端管理就給那個網域一組密碼。
+  // 控制面板。產生出來的頁面，掛在自己的網址 —— 不占用內容根目錄的 index.html。
+  body.push('# 控制面板（caddyctl 產生的 conf\\_panel.html）');
+  body.push('redir /panel/ /panel 308');
+  body.push('handle /panel {');
+  body.push('\troot * ' + q(win(CADDY_DIR + '/conf')));
+  body.push('\trewrite * /_panel.html');
+  body.push('\tfile_server');
+  body.push('}');
+  body.push('');
+
   body.push('# 執行 action（由 action daemon 派送）');
   body.push('handle /run {');
   body.push('\treverse_proxy 127.0.0.1:' + n.actiond_port);
@@ -258,6 +450,38 @@ export function renderNodeSite(n) {
   body.push('\treverse_proxy 127.0.0.1:' + n.actiond_port);
   body.push('}');
   body.push('');
+
+  // /c/ —— 家目錄裡的設定檔，改名之後集中在一個網址。
+  //
+  // 每個檔案一個 handle，而且是**確切路徑**（不是 /c/*）。這一點是安全性的關鍵：
+  // handle 的路徑比對就是唯一的閘門，所以同一個目錄裡的鄰居（.claude 底下的
+  // .credentials.json 之類）從 /c/ 完全打不到 —— 只有 CONFIG_FILES 明列的那幾個
+  // 路徑存在，其餘一律落到後面的 handle 去。（實測驗過。）
+  //
+  // 索引頁是 caddyctl 產生的 conf/_configs.html，裡面每一行都包在 fileExists 裡，
+  // 由 Caddy 在**每次瀏覽時**判斷，所以裝了新工具不必重新產生設定。
+  if (n.home) {
+    const home = posix(n.home);
+    body.push('# 家目錄裡的設定檔（清單見 render.mjs 的 CONFIG_FILES）');
+    body.push('redir /c /c/ 308');
+    body.push('handle /c/ {');
+    body.push('\troot * ' + q(win(CADDY_DIR + '/conf')));
+    body.push('\trewrite * /_configs.html');
+    // templates 的 root 跟 file_server 的 root 是分開的兩件事：樣板檔在 conf\，
+    // 但 fileExists 要以家目錄為基準去判斷那些設定檔在不在。
+    body.push('\ttemplates {');
+    body.push('\t\troot ' + q(win(home)));
+    body.push('\t}');
+    body.push('\tfile_server');
+    body.push('}');
+    for (const [name, rel] of CONFIG_FILES) {
+      const { dir, file } = splitConfigPath(home, rel);
+      body.push('handle /c/' + name + ' {');
+      body.push('\timport cfgfile ' + q(win(dir)) + ' ' + file);
+      body.push('}');
+    }
+    body.push('');
+  }
 
   body.push('# 各 app 的路由：一個 app 一個檔，丟進去 reload 就生效');
   body.push('import ' + q(CADDY_DIR + '/apps/*.caddy'));
@@ -281,9 +505,13 @@ export function renderNodeSite(n) {
   body.push('redir /pub /pub/ 308');
   body.push('');
 
-  // fsdav 的第三個參數是 markdown 樣板（_md.html）所在的目錄。放在內容根目錄，
-  // 才不會為了渲染而去汙染 projects 那種地方。
-  const tpl = q(win(L.content_root));
+  // Markdown 樣板（_md.html）所在的目錄。
+  //
+  // 放 conf\ 而不是內容根目錄：它是產品的檔案，不是使用者的內容。擺在 D:\www
+  // 會出現在目錄列表裡、會被使用者誤刪、而且會落進 install.ps1 那條
+  // 「已存在就保留不覆蓋」的規則 —— 從此永遠不更新。
+  // 內容根目錄現在完全屬於使用者，這是那個決定的一部分。
+  const tpl = q(win(CADDY_DIR + '/conf'));
 
   for (const [prefix, root] of mounts) {
     body.push('handle /' + prefix + '/* {');
@@ -330,6 +558,8 @@ export function urlMap(n) {
     m['/' + L.actions_mount + '/'] = win(CADDY_DIR + '/actions');
   }
   m['/pub/'] = win(L.public_dir);
+  m['/panel'] = 'control panel (' + win(CADDY_DIR + '/conf/_panel.html') + ')';
+  if (n.home) m['/c/'] = 'home config files (' + win(n.home) + ')';
   m['/run'] = 'action daemon (reverse_proxy 127.0.0.1:' + n.actiond_port + ')';
   return m;
 }

@@ -29,6 +29,8 @@
 C:\Caddy\conf\sites\<label>.caddy     一個網域一個檔，自給自足
 C:\Caddy\conf\global.caddy            duckdns token 在這裡（Caddy 本來就要用）
 C:\Caddy\conf\manifest.json           這台機器的非祕密描述
+C:\Caddy\conf\_panel.html            控制面板（/panel），caddyctl 產生
+C:\Caddy\conf\_configs.html          /c/ 的索引，caddyctl 產生
 ```
 
 所以每個指令只需要**一台機器的資訊**，做完就沒有東西要留著：
@@ -742,49 +744,30 @@ node src\caddyctl.mjs edge set --name <label> ... --reload
 `conf\auth\` 底下的個別路徑密碼、和 `apps\` 底下的 drop-in 不受影響 ——
 那些是 `import` 進去的獨立檔案，不會被重新產生的過程蓋掉。
 
-### 首頁樣板同理 —— 但要自己覆蓋
+### 內容根目錄是你的，產品的檔案不放在那裡
 
-`templates\www\` 底下那三個檔（`index.html`、`_md.html`、`public\index.html`）
-也是快照，而且比 `conf\` 更黏：`install.ps1` 只在**目的地不存在**時才寫，
-已經有了就印「已存在，保留不覆蓋」跳過。那是故意的 —— 首頁是你的內容，
-安裝程式不該把你改過的東西蓋掉。
+`<槽>\www`（以及 `\projects`、`\workspaces`）**完全屬於你**。產品自己的頁面
+一個都不住在那裡：
 
-代價是重跑 `install.ps1` 永遠不會更新它們，重裝也一樣（`uninstall.ps1` 不刪
-網站內容）。要換成新版樣板得自己覆蓋。不需要管理員，在 repo 目錄裡跑：
+| 檔案 | 誰的 | 誰在維護 |
+|---|---|---|
+| `C:\Caddy\conf\_panel.html` | 產品 | caddyctl 產生，每次 `node init` 重寫 |
+| `C:\Caddy\conf\_configs.html` | 產品 | 同上 |
+| `C:\Caddy\conf\_md.html` | 產品 | `install.ps1` 直接覆蓋 |
+| `<槽>\www\index.html` | **你的** | 只在不存在時給一頁起始頁 |
+| `<槽>\www\public\index.html` | **你的** | 同上 |
 
-```powershell
-$ErrorActionPreference = 'Stop'
-$repo  = (Get-Location).Path
-$m     = Get-Content 'C:\Caddy\conf\manifest.json' -Raw -Encoding UTF8 | ConvertFrom-Json
-if (-not $m.node) { throw '這台沒有 node 角色，沒有內容目錄可以更新。' }
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+所以 `install.ps1` 對內容目錄只做兩件事：把目錄建出來，以及在**檔案不存在時**
+放一頁可以直接刪掉的起始頁。你改過的東西它不會碰。
 
-@(
-    @{ s = 'templates\www\index.html';        d = (Join-Path $m.node.content_root 'index.html') }
-    @{ s = 'templates\www\_md.html';          d = (Join-Path $m.node.content_root '_md.html')   }
-    @{ s = 'templates\www\public\index.html'; d = (Join-Path $m.node.public_dir   'index.html') }
-) | ForEach-Object {
-    if (Test-Path $_.d) { Copy-Item $_.d ($_.d + '.' + $stamp + '.bak') }
-    # 讀樣板一定要明講 UTF-8，不能用 Get-Content 的預設值 —— 理由見下面那則
-    $txt = [IO.File]::ReadAllText((Join-Path $repo $_.s), [Text.UTF8Encoding]::new($false))
-    $txt = $txt -replace '__MACHINE__', $env:COMPUTERNAME
-    [IO.File]::WriteAllText($_.d, $txt, [Text.UTF8Encoding]::new($false))
-    Write-Host ('  ' + $_.d)
-}
-```
+> **這件事以前不是這樣。** 控制面板原本就是 `<槽>\www\index.html` 本身 ——
+> 也就是「這台的首頁」跟「你自己的首頁」是同一個檔，只能活一個。放自己的
+> `index.html` 就等於把面板刪掉，而且看起來像產品壞了、不像自己覆蓋了什麼。
+> 面板改成獨立的 `/panel` 之後，你怎麼動內容目錄都不會弄丟它。
 
-覆蓋前會在原地留一份 `.<時間戳>.bak`。不用 reload —— 這些是靜態檔，Caddy 直接
-讀磁碟，存完重新整理瀏覽器就好。
-
-`/pub/` 是唯讀掛載（`pubro`），從 HTTP 寫會回 405，所以這件事只能在那台機器上做，
-不能靠 WebDAV 遠端補。
-
-> **首頁如果是一片亂碼，就是這一段沒做對。** 樣板 .html 是 UTF-8 **沒有 BOM**
-> （`.gitattributes` 只對 `.ps1` 強制 BOM），而 PowerShell 5.1 的 `Get-Content`
-> 少了 `-Encoding` 會拿系統 ANSI 去讀。中文 Windows 是 cp950，於是整份被 Big5
-> 解成假字、emoji 直接變成 `?`，再原樣寫出一個「格式完全正確」的 UTF-8 檔案。
-> 頁面上看得到壞掉，檔案本身卻挑不出毛病，而且**不可逆** —— 原字在解碼那一步
-> 就丟了，只能拿樣板重新產生一次。`install.ps1` 早期版本踩過這個坑。
+`conf\` 底下那幾個是產品的地盤（`_panel.html`、`_configs.html`、`_md.html`），
+標題也都寫著「不要手動編輯」—— 改了下次 `node init` 或 `install.ps1` 會蓋掉。
+要改 Markdown 的樣式，改 repo 裡的 `templates\www\_md.html` 再重跑安裝。
 
 ---
 
@@ -864,15 +847,53 @@ sc.exe delete actiond
 
 | URL | 是什麼 |
 |---|---|
-| `/` | 內容根目錄（瀏覽 + WebDAV 讀寫） |
+| `/panel` | **控制面板** —— 這台有哪些網址，一頁看完 |
+| `/` | 內容根目錄（瀏覽 + WebDAV 讀寫）—— **這是你的**，放什麼都行 |
 | `/p/`、`/w/` | `<槽>\projects`、`<槽>\workspaces` |
 | `/a/` | actions 資料夾（可用 WebDAV 編輯 action） |
-| `/run` | action 控制面板 |
+| `/c/` | **這台裝了哪些工具** —— 家目錄裡的設定檔，改過名字集中在一起 |
+| `/run` | action 面板 |
 | `/run/<名稱>` | 執行某個 action |
 | `/pub/` | **公開唯讀，不需要密碼** |
 | `/<app>/` | 你掛的 app |
 
 某一台上實際的對應關係，看那台的 `C:\Caddy\conf\manifest.json`（`node.url_map`）。
+
+`/panel` 是產生出來的，所以不會說謊：static 的機器不會列出 `/p/ /w/ /a/`，
+沒有家目錄設定的機器不會列出 `/c/`。
+
+---
+
+## `/c/` —— 這台裝了哪些工具
+
+家目錄裡的設定檔，集中在一個網址，而且**改過名字**：
+
+```
+/c/openclaw.json   ->  ~\.openclaw\openclaw.json
+/c/claude.json     ->  ~\.claude\settings.json
+/c/codex.toml      ->  ~\.codex\config.toml
+```
+
+改名是必要的 —— 好幾個工具的設定檔都叫 `settings.json`，擺在一起分不出誰是誰。
+
+**只列出這台真的存在的檔案**，而且是每次瀏覽時即時判斷的。所以之後在這台裝了
+新工具，不必 reload、不必重跑 caddyctl，`/c/` 自己就會多一行。也就是說這一頁
+等於「這台裝了哪些東西」的清單。
+
+可以直接用 WebDAV 編輯（`PUT`）。改完通常還要重啟對應的服務，看 `/run`。
+
+**清單是 `src\render.mjs` 裡的 `CONFIG_FILES`。** 沒有排除邏輯，也刻意不做 ——
+一個檔案要不要出現在 `/c/`，就看它有沒有寫在那張表裡。加行之前想一下那個檔裡
+有沒有金鑰：`.npmrc`、`.aws\credentials`、`.ssh\id_*`、`.claude\.credentials.json`
+這類純憑證檔就是為此不在表上。
+
+> **同目錄的鄰居打不到。** 每個檔案各自一個確切路徑的 `handle`（不是 `/c/*`），
+> 所以 `/c/.credentials.json` 是 404，即使那個檔就在 `.claude\` 底下。
+> 這是安全性的關鍵 —— 改成萬用字元就等於把整個家目錄開出去。
+
+家目錄是 `caddyctl node init` 當下抓的（`os.homedir()`），寫進 manifest。
+**不能留給 Caddy 去解**：它是以服務身分執行的，`%USERPROFILE%` 指到別的地方。
+要改用 `--home <路徑>`，不要這個功能用 `--no-home`。
 
 ---
 
@@ -887,6 +908,20 @@ curl.exe -X POST http://127.0.0.1/run/caddy-rollback   # 還原上一份可用�
 **寫壞設定不會讓站台掛掉。** `caddy-reload` 驗證失敗時完全不動作，而且正在跑的
 Caddy 用的是記憶體裡的設定 —— 只有服務重啟才會吃到壞檔案。
 `Caddyfile.last-good` 只在 reload 成功後更新，所以它永遠跑得起來。
+
+> **設定沒改的話，`caddy-reload` 其實什麼都不做，但還是回報成功。**
+> Caddy 的 `Load()` 在新設定跟目前完全相同時直接回 `errSameConfig`，而那被當成
+> 成功吞掉（`caddy.go:112-142`）。所以你會看到「reload OK」，但沒有任何東西
+> 重新 provision —— `dynamic_dns` 也不會重新查一次 IP。
+>
+> 真的要強制（例如想立刻推一次 DNS 更新）：
+>
+> ```powershell
+> C:\Caddy\caddy.exe reload --config C:\Caddy\Caddyfile --adapter caddyfile --force
+> ```
+>
+> 或直接重啟服務。順帶一提，`dynamic_dns` 在**服務啟動時就會檢查一次**，
+> 不是等 `check_interval` 到期，所以剛裝好、剛重啟的機器不必等。
 
 log 在 `C:\Caddy\logs\`。
 

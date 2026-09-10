@@ -35,7 +35,7 @@ import os from 'node:os';
 import {
   CADDY_DIR, DNS_PROVIDER, DNS_SUFFIX, fqdn, NODE_DEFAULTS, nodeLayout,
   renderGlobal, renderEdgeSite, renderNodeSite, pluginsFor, urlMap, edgeContentDefault, NODE_SITE,
-  posix, win, LOG_DIR,
+  posix, win, LOG_DIR, CONFIG_FILES, renderConfigIndex, renderPanel,
 } from './render.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -80,7 +80,7 @@ const CRED = ['password', 'password-hash'];
 const SPEC = {
   'list':        ['dir'],
   'reload':      ['dir'],
-  'node init':   [...MUTATING, 'drive', 'port', 'listen', 'machine', 'static'],
+  'node init':   [...MUTATING, 'drive', 'port', 'listen', 'machine', 'static', 'home', 'no-home'],
   'edge init':   [...MUTATING, 'token', 'machine'],
   'edge set':    [...MUTATING, ...CRED, 'name', 'ip', 'content', 'hold', 'message',
                   'public', 'no-public', 'allow-anonymous'],
@@ -212,11 +212,19 @@ function saveState(dir, state) {
     plugins: pluginsFor(roles),
     dns: { provider: DNS_PROVIDER, suffix: DNS_SUFFIX },
   };
-  const json = JSON.stringify(full, null, 2) + '\n';
+  // 非 ASCII 一律寫成 \uXXXX。**檔案位元組必須是純 ASCII**：PowerShell 5.1 的
+  // Get-Content 讀沒有 BOM 的 UTF-8 會當成系統 ANSI（中文版是 Big5），一個全形
+  // 字元就足以讓 ConvertFrom-Json 整份失敗 —— 而安裝程式正是靠這個檔決定要下載
+  // 哪個建置。JSON 的 \uXXXX 逃脫剛好兩全：檔案是 ASCII，值仍然是原字
+  // （PS 5.1 的 ConvertFrom-Json 解得回來，實測過）。
+  //
+  // 沒有這一段的話，家目錄或機器名有中文的人（C:\Users\陳大文）會被擋在
+  // node init 之外，而且錯誤訊息看起來像是我們不支援他。
+  const json = JSON.stringify(full, null, 2)
+    .replace(/[^\x00-\x7F]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) + '\n';
 
-  // manifest.json 必須是純 ASCII。PowerShell 5.1 的 Get-Content 讀沒有 BOM 的
-  // UTF-8 會當成系統 ANSI（中文版是 Big5），一個全形括號就足以讓
-  // ConvertFrom-Json 整份失敗 —— 而安裝程式正是靠這個檔決定要下載哪個建置。
+  // 逃脫之後理論上不可能再有非 ASCII，但還是留著這道守衛 —— 它擋的是
+  // 「將來有人改了序列化方式」，那種錯誤安靜起來代價很大。
   const bad = json.split('\n').filter((l) => /[^\x00-\x7F]/.test(l));
   if (bad.length) {
     die('manifest.json 不能有非 ASCII 字元（PowerShell 5.1 會讀成 Big5）：\n  ' + bad.join('\n  '));
@@ -234,10 +242,45 @@ function rewriteGlobal(dir, state, token) {
 }
 
 // Caddyfile 骨架是產品的固定邏輯，直接從 repo 複製，不產生。
-function ensureSkeleton(dir) {
-  const dst = join(dir, 'Caddyfile');
-  if (existsSync(dst)) return;
-  writeText(dst, readFileSync(join(REPO, 'templates', 'Caddyfile'), 'utf8'));
+// /c/ 的索引頁。放在 conf\ 而不是內容根目錄，因為它是**產生出來的**，
+// 跟 global.caddy、sites\*.caddy 同一類 —— 每次 node init 重寫，不是使用者的內容。
+// （放進 D:\www 的話會落進 install.ps1 那條「已存在就保留不覆蓋」的規則裡，
+// 從此再也不會更新。）
+//
+// 頁面裡每一行都包在 {{if fileExists}} 裡，由 Caddy 在瀏覽時判斷，所以在這台
+// 裝了新工具不必重跑這裡 —— 只有「產品的清單本身變長了」才需要重新產生。
+function writeConfigIndex(dir, state, node) {
+  const p = join(dir, 'conf', '_configs.html');
+  if (!node.home) {
+    if (existsSync(p)) rmSync(p);
+    return;
+  }
+  writeText(p, renderConfigIndex(state.machine));
+}
+
+// Caddyfile 骨架 —— **一律覆蓋，不是「不存在才寫」。**
+//
+// 這個檔是產品提供的（開頭就寫著「不要編輯」），裡面是 snippet 定義，
+// 所有跟這台機器有關的東西都在 conf\ 底下。原本這裡是 if (exists) return，
+// 結果是：產品加了新的 snippet，既有機器永遠拿不到 —— install.ps1 也只檢查
+// 它在不在，不會更新。git pull 之後重跑 node init 看起來成功，實際上還在用
+// 舊骨架。（實測踩到：加了 (cfgfile) 之後 reload 直接報 "File to import not
+// found: cfgfile"。硬錯誤算幸運的，換成別種改動就是安靜地跑舊行為。）
+// Markdown 渲染樣板。**由 caddyctl 寫，不是 install.ps1。**
+//
+// conf\ 底下的東西全是 caddyctl 的產物，這個不該是例外。放在 install.ps1 的話，
+// 更新它就要管理員 + 重跑安裝 —— 而 install.ps1 的設計是「一台機器一輩子只跑
+// 這一次」，之後所有變更都該能用 caddyctl 完成。放這裡，git pull 之後
+// node init --reload 就更新到了。
+//
+// 一律覆蓋：它是產品的檔案。要改樣式就改 repo 裡的 templates\www\_md.html。
+function writeMdTemplate(dir) {
+  writeText(join(dir, 'conf', '_md.html'),
+            readFileSync(join(REPO, 'templates', 'www', '_md.html'), 'utf8'));
+}
+
+function writeSkeleton(dir) {
+  writeText(join(dir, 'Caddyfile'), readFileSync(join(REPO, 'templates', 'Caddyfile'), 'utf8'));
 }
 
 const addRole = (state, role) => {
@@ -389,14 +432,25 @@ async function cmdNodeInit(f) {
     listen: String(f.listen || state.node?.listen || NODE_DEFAULTS.listen),
     actiond_port: Number(f.port || state.node?.actiond_port || NODE_DEFAULTS.actiond_port),
     static: isStatic,
+    // /c/ 要用的家目錄。**一定要在這裡抓，不能留給安裝程式或 Caddy 去解。**
+    // caddyctl 是使用者自己跑的，os.homedir() 就是那個人的家目錄；而 Caddy 是以
+    // 服務身分執行的，它的 %USERPROFILE% 是 LOCAL SYSTEM 或那個服務帳號的，
+    // 指到別的地方去。所以在這裡定案，寫進設定檔。
+    //
+    // --home 是給例外情況的（把設定備給另一台、或家目錄不在預設位置）。
+    // --no-home 則是不要 /c/ 這個功能。
+    home: f['no-home'] ? null : posix(String(f.home || state.node?.home || os.homedir())),
   };
 
   addRole(state, 'node');
   state.node = node;
   if (f.machine) state.machine = String(f.machine);
 
-  ensureSkeleton(dir);
+  writeSkeleton(dir);
   writeText(join(sitesDir(dir), '_node.caddy'), renderNodeSite(node));
+  writeConfigIndex(dir, state, node);
+  writeMdTemplate(dir);
+  writeText(join(dir, 'conf', '_panel.html'), renderPanel(state.machine, node));
   rewriteGlobal(dir, state);
   saveState(dir, state);
 
@@ -433,7 +487,7 @@ async function cmdEdgeInit(f) {
   if (!state.edge) state.edge = { domains: {} };
   if (f.machine) state.machine = String(f.machine);
 
-  ensureSkeleton(dir);
+  writeSkeleton(dir);
   ensureDir(sitesDir(dir));
   rewriteGlobal(dir, state, token);
   saveState(dir, state);

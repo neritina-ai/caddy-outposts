@@ -87,6 +87,35 @@
 }
 
 # -----------------------------------------------------------------------------
+#  cfgfile <檔案所在目錄> <目錄裡的真實檔名>
+#
+#  把家目錄裡某一個設定檔掛到一個網址上，順便改名 —— OpenClaw、Claude Code、
+#  Codex 的設定檔擺在一起會有三個 settings.json，分不出誰是誰。
+#
+#  兩個要注意的：
+#
+#  1. rewrite 一定要排在 webdav 前面。webdav 是拿「請求路徑」去 root 底下找檔案，
+#     所以要先把 /c/claude.json 改寫成 /settings.json，它才找得到。route 裡面是
+#     照書寫順序執行的，不是靠 directive 排序。
+#
+#  2. **安全性靠的是呼叫端的 handle 路徑，不是這個 snippet。** 這裡的 root 是
+#     整個目錄，是呼叫端寫 `handle /c/claude.json`（確切路徑，不是 /c/*）
+#     才讓同目錄的鄰居打不到 —— .claude 底下還有 .credentials.json。
+#     改成萬用字元就等於把整個目錄開出去。
+# -----------------------------------------------------------------------------
+(cfgfile) {
+	route {
+		rewrite * {args[1]}
+		@dav method PROPFIND PROPPATCH COPY MOVE LOCK UNLOCK OPTIONS PUT DELETE
+		webdav @dav {
+			root {args[0]}
+		}
+		root * {args[0]}
+		file_server
+	}
+}
+
+# -----------------------------------------------------------------------------
 #  pubro <實體路徑> <URL 前綴>
 #
 #  公開唯讀。這是整個站台唯一不需要密碼的路徑（edge 會把它排除在認證之外），

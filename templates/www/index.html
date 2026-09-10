@@ -8,50 +8,25 @@
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#3d444d;--card:#151b23;--link:#4493f8}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 -apple-system,"Segoe UI","Noto Sans TC",system-ui,sans-serif}
-main{max-width:40rem;margin:0 auto;padding:2rem 1rem 4rem}
-h1{font-size:1.4rem;margin:0 0 .2em}
-.sub{color:var(--mut);font-size:.9rem;margin-bottom:2rem}
-a.card{display:flex;gap:1rem;align-items:center;background:var(--card);border:1px solid var(--line);
-border-radius:12px;padding:1rem;margin-bottom:.7rem;text-decoration:none;color:inherit}
-a.card:active{transform:translateY(1px)}
-.ico{font-size:1.6rem;line-height:1}
-.n{font-weight:600}
-.d{font-size:.85rem;color:var(--mut)}
+main{max-width:34rem;margin:0 auto;padding:3rem 1rem 4rem}
+h1{font-size:1.4rem;margin:0 0 .4em}
+p{color:var(--mut);font-size:.92rem}
+a{color:var(--link)}
+a.go{display:inline-block;margin:1.4rem 0;background:var(--card);border:1px solid var(--line);
+border-radius:12px;padding:.8rem 1.2rem;text-decoration:none;color:inherit;font-weight:600}
 code{background:var(--card);border:1px solid var(--line);padding:.1em .4em;border-radius:6px;font-size:.85em}
-footer{margin-top:2.5rem;font-size:.8rem;color:var(--mut);line-height:1.8}
+footer{margin-top:2rem;font-size:.8rem;color:var(--mut);line-height:1.8}
 </style>
 <main>
   <h1>__MACHINE__</h1>
-  <div class="sub">瀏覽 · Markdown 渲染 · WebDAV 讀寫，同一組網址</div>
+  <p>這一頁是內容根目錄裡的 <code>index.html</code>，<strong>它是你的</strong> —— 改掉或刪掉都可以。</p>
 
-  <a class="card" href="/p/">
-    <span class="ico">📦</span>
-    <span><span class="n">/p/</span><br><span class="d">projects — 瀏覽 / .md 渲染 / WebDAV 讀寫</span></span>
-  </a>
-  <a class="card" href="/w/">
-    <span class="ico">🗂️</span>
-    <span><span class="n">/w/</span><br><span class="d">workspaces — 瀏覽 / .md 渲染 / WebDAV 讀寫</span></span>
-  </a>
-  <a class="card" href="/run">
-    <span class="ico">⚡</span>
-    <span><span class="n">/run</span><br><span class="d">執行主機上的動作</span></span>
-  </a>
-  <a class="card" href="/a/">
-    <span class="ico">📝</span>
-    <span><span class="n">/a/</span><br><span class="d">C:\Caddy\actions — 編輯 action 本身</span></span>
-  </a>
-
-  <a class="card" href="/pub/">
-    <span class="ico">🌐</span>
-    <span><span class="n">/pub/</span><br><span class="d">對外公開唯讀，<b>不需要密碼</b></span></span>
-  </a>
+  <a class="go" href="/panel">→ 控制面板 /panel</a>
 
   <footer>
-    這一頁本身就是內容根目錄裡的 <code>index.html</code>，站台根目錄同樣可以用
-    WebDAV 編輯。<br>
-    每個網址實際對應到哪個目錄，看
-    <code>C:\Caddy\conf\manifest.json</code> 的 <code>url_map</code>。<br>
-    看 .md 原始碼：網址後面加 <code>?raw=1</code>
+    控制面板不住在這裡，所以你怎麼動這個目錄都不會弄丟它。<br>
+    刪掉這個檔案，這個網址就變成目錄列表。<br>
+    這台有哪些網址，看 <a href="/panel">/panel</a>。
   </footer>
 </main>
 </html>

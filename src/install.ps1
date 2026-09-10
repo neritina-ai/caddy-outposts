@@ -163,25 +163,36 @@ if ($contentRoot) {
     Say ''
     Say '=== 內容目錄 ==='
     New-Item -ItemType Directory -Force -Path $contentRoot, $publicDir | Out-Null
-    # public_dir 不一定是 content_root\public，所以目的地寫完整路徑
-    $files = @(
-        @{ s = 'templates\www\index.html';        d = (Join-Path $contentRoot 'index.html') },
-        @{ s = 'templates\www\_md.html';          d = (Join-Path $contentRoot '_md.html') },
-        @{ s = 'templates\www\public\index.html'; d = (Join-Path $publicDir  'index.html') }
-    )
-    foreach ($f in $files) {
-        if (Test-Path $f.d) {
-            Say ('  ' + $f.d + ' 已存在，保留不覆蓋')
-        } else {
-            # 樣板是 UTF-8 沒有 BOM，一定要明講編碼：PS 5.1 的 Get-Content 沒有
-            # -Encoding 就用系統 ANSI 讀（這幾台是 cp950），中文會被 Big5 解成假字，
-            # emoji 更直接變成 ?。寫出去照樣是合法的 UTF-8，所以事後看不出是哪裡壞的。
-            # 用 ReadAllText 跟下面的 WriteAllText 對齊，不靠任何預設值。
-            $txt = [IO.File]::ReadAllText((Join-Path $repo $f.s), [Text.UTF8Encoding]::new($false))
-            $txt = $txt -replace '__MACHINE__', $Machine
-            [IO.File]::WriteAllText($f.d, $txt, [Text.UTF8Encoding]::new($false))
-            Say ('  ' + $f.d)
-        }
+
+    # /pub/ 是唯一的例外：pubro 不出目錄列表，沒有 index.html 就是 404。
+    # 所以給一個起始頁 —— 但那是使用者的門面，已經有就不覆蓋。
+    $pubIndex = Join-Path $publicDir 'index.html'
+    if (Test-Path $pubIndex) {
+        Say ('  ' + $pubIndex + ' 已存在，保留不覆蓋')
+    } else {
+        # 樣板是 UTF-8 沒有 BOM，一定要明講編碼：PS 5.1 的 Get-Content 沒有
+        # -Encoding 就用系統 ANSI 讀（這幾台是 cp950），中文會被 Big5 解成假字，
+        # emoji 更直接變成 ?。寫出去照樣是合法的 UTF-8，所以事後看不出是哪裡壞的。
+        # 用 ReadAllText 跟下面的 WriteAllText 對齊，不靠任何預設值。
+        $txt = [IO.File]::ReadAllText((Join-Path $repo 'templates\www\public\index.html'), [Text.UTF8Encoding]::new($false))
+        $txt = $txt -replace '__MACHINE__', $Machine
+        [IO.File]::WriteAllText($pubIndex, $txt, [Text.UTF8Encoding]::new($false))
+        Say ('  ' + $pubIndex)
+    }
+
+    # 內容根目錄給一個起始頁。**它是使用者的，不是產品的。**
+    #
+    # 空目錄的 / 會是 Caddy 那個灰灰的檔案列表，對剛裝好的人來說沒有任何線索
+    # 說明 /panel 在哪。所以給一頁短的，講清楚「這個檔是你的、可以刪」，
+    # 並且指向控制面板。已存在就不覆蓋 —— 使用者改過的東西不能動。
+    $index = Join-Path $contentRoot 'index.html'
+    if (Test-Path $index) {
+        Say ('  ' + $index + ' 已存在，保留不覆蓋')
+    } else {
+        $txt = [IO.File]::ReadAllText((Join-Path $repo 'templates\www\index.html'), [Text.UTF8Encoding]::new($false))
+        $txt = $txt -replace '__MACHINE__', $Machine
+        [IO.File]::WriteAllText($index, $txt, [Text.UTF8Encoding]::new($false))
+        Say ('  ' + $index + '   （起始頁，可自由取代或刪除）')
     }
 
     # 掛載點只要目錄不在就是 404，而且是安靜的 404。裝的時候講一聲，
