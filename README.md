@@ -459,6 +459,46 @@ node src\caddyctl.mjs edge set --name myfiles --ip 10.0.0.2 `
   --password-hash 'alice:$2a$14$...' --password-hash 'bob:$2a$14$...'
 ```
 
+### 移除網域（後悔了）
+
+指令叫 `edge remove`，沒有 `unset`：
+
+```powershell
+node src\caddyctl.mjs list                        # 先看有哪些
+node src\caddyctl.mjs edge remove --name myfiles --reload
+```
+
+`--name` 是唯一必要的旗標。跟其他指令一樣吃 `--dir` 和 `--reload`。
+
+**它會動的：**
+
+- 刪掉 `conf\sites\<label>.caddy`
+- 從 `conf\manifest.json` 的 `edge.domains` 拿掉那一筆
+- 重寫 `conf\global.caddy` —— 那個網域一併退出 `dynamic_dns`，**DNS 紀錄不會再更新**。
+  如果它是最後一個網域，整個 `dynamic_dns` 區塊會消失（沒有網域就沒有東西要更新）
+
+**它不會動的**，這幾樣要自己處理：
+
+| 留下來的 | 怎麼辦 |
+|---|---|
+| `conf\auth\<label>\` 個別路徑的密碼 | 見下面那則警告 —— 建議先清再移除 |
+| `apps\<label>\` 底下的 app 路由（只有 serve 模式會有） | 不再被 import，要清就自己刪目錄 |
+| 內容目錄（例如 `D:\www\<label>`） | 那是你的資料，本來就不該由這個指令刪 |
+| duckdns.org 上的那個子網域 | caddyctl 只是不再更新它的 IP，紀錄還在。要真的退掉得去 duckdns 網站砍 |
+| 已經簽發的憑證 | 留在 Caddy 的 data 目錄，過期就自然失效 |
+
+> **同名加回來，舊的路徑密碼會復活。** `edge remove` 不刪 `conf\auth\<label>\`，
+> 而 `edge set` 產生的站台設定固定會 `import "C:/Caddy/conf/auth/<label>/*.caddy"`。
+> 所以拿同一個 label 重新開站，之前設過的個別路徑密碼會原封不動回來 ——
+> 你以為是全新的站，實際上 `/reports/*` 還是要舊密碼。
+>
+> 更麻煩的是**順序**：網域一旦移除，`auth remove` 就會回「這台沒有名叫 <label>
+> 的網域」而拒絕動作，孤兒檔只能自己去刪目錄。要清乾淨就**先 `auth remove`
+> 再 `edge remove`**，或事後手動 `Remove-Item C:\Caddy\conf\auth\<label> -Recurse`。
+
+`edge remove` 不會去檢查有沒有別的東西指著這個網域，也不需要 —— 一個網域一個檔，
+移除就是刪那個檔加重寫 `global.caddy`，不會牽動其他站。
+
 ### 幫還沒裝好的機器先備設定
 
 `--dir` 指到別的目錄就好，弄完整包複製到那台的 `C:\Caddy`：
