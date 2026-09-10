@@ -461,6 +461,27 @@ node src\caddyctl.mjs edge set --name myfiles --ip 10.0.0.2 `
   --password-hash 'alice:$2a$14$...' --password-hash 'bob:$2a$14$...'
 ```
 
+### 記住登入
+
+網域有密碼時，第一次通過之後會發一個 **30 天**的 cookie，所以手機不必每次重輸 ——
+iOS Safari 會把背景分頁從記憶體丟掉，回來重新載入就又問一次密碼，這是它的行為，
+`basic_auth` 那邊沒有任何設定可以改。
+
+30 天是**絕對**的，不會因為你一直在用而延長。時間到就重新輸入一次密碼。
+
+要讓**所有裝置立刻登出**：換掉 `conf\sites\<label>.caddy` 裡那串 `sc_auth` 的
+亂數，再 reload。
+
+```powershell
+# 看一眼現在是哪一串
+Select-String sc_auth C:\Caddy\conf\sites\<label>.caddy
+
+# 換掉之後
+node src\caddyctl.mjs reload
+```
+
+`/pub/*` 不受影響 —— 它本來就免密碼。沒有設密碼的網域不會發任何 cookie。
+
 ### 移除網域（後悔了）
 
 指令叫 `edge remove`，沒有 `unset`：

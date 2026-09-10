@@ -31,11 +31,12 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import {
   CADDY_DIR, DNS_PROVIDER, DNS_SUFFIX, fqdn, NODE_DEFAULTS, nodeLayout,
   renderGlobal, renderEdgeSite, renderNodeSite, pluginsFor, urlMap, edgeContentDefault, NODE_SITE,
-  posix, win, LOG_DIR, CONFIG_FILES, renderConfigIndex, renderPanel,
+  posix, win, LOG_DIR, CONFIG_FILES, renderConfigIndex, renderPanel, REMEMBER_COOKIE,
 } from './render.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -521,6 +522,25 @@ function edgeAddHelp() {
   console.log('\n完整說明：caddyctl --help');
 }
 
+// 記住登入用的祕密。
+//
+// **只存在 conf\sites\<label>.caddy 裡，不進 manifest.json。** 跟 bcrypt 雜湊
+// 同一條規則：manifest 是要給機器上的 AI 讀的（見 skill/SKILL.md），裡面只放
+// 非祕密的描述。
+//
+// 所以要沿用舊值就從那個檔讀回來 —— 這也是 README 教人救回忘記的密碼雜湊的
+// 同一招。edge set 是「整份取代」，但這串亂數不是使用者指定的設定，
+// 每次改個 IP 就把所有裝置踢出去說不過去，所以有就沿用。
+function readRemember(dir, label) {
+  const p = sitePath(dir, label);
+  if (!existsSync(p)) return null;
+  const m = new RegExp(REMEMBER_COOKIE + '=([0-9a-f]{64})').exec(readFileSync(p, 'utf8'));
+  return m ? m[1] : null;
+}
+
+// 32 bytes 的 CSPRNG，寫成 hex —— cookie 值和 Caddyfile 字串都不必跳脫。
+const newRemember = () => randomBytes(32).toString('hex');
+
 async function cmdEdgeSet(f) {
   const dir = resolve(f.dir ? String(f.dir) : win(CADDY_DIR));
   const state = loadState(dir);
@@ -581,6 +601,9 @@ async function cmdEdgeSet(f) {
     def = { mode: 'serve', content, users: usersFrom(f, dir, label) };
   }
 
+  // 有密碼才需要記住登入。沿用舊的祕密，沒有就產生一個 —— 不然每次
+  // edge set（改 IP、換目錄）都會把所有裝置踢出去。
+  if (Object.keys(def.users || {}).length) def.remember = readRemember(dir, label) || newRemember();
   writeText(sitePath(dir, label), renderEdgeSite(label, def));
 
   state.edge.domains = state.edge.domains || {};

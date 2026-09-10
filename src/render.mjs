@@ -139,6 +139,78 @@ export function renderGlobal({ roles, token, labels = [], checkInterval = '60m' 
   return GENERATED + '\n' + lines.join('\n') + '\n';
 }
 
+// ---------------------------------------------------------------- 記住登入
+//
+// iOS Safari 會把背景分頁從記憶體裡丟掉，回來時重新載入、收到 401、再問一次
+// 密碼 —— 分頁看起來沒關，內容其實早就沒了。而 basic_auth **沒有任何設定**
+// 可以改善這件事，也不可能有：HTTP Basic 的設計就是伺服器不發 session，
+// 瀏覽器每個請求重送 Authorization 標頭，「要不要記住」100% 是瀏覽器的決定。
+//
+// 所以密碼通過之後補發一個 cookie，之後帶 cookie 就放行。
+//
+// 30 天，而且是**絕對窗口**不是滑動窗口。滑動（每次通過都重發 cookie）對使用者
+// 更方便，但那等於「只要有人在用這把鑰匙它就永遠不過期」，而「有人」包括拿到
+// cookie 的攻擊者 —— 那會把「風險有上界」這個唯一的安全保證拿掉。絕對窗口的
+// 代價只是每個月在手機上重打一次密碼。
+const REMEMBER_DAYS = 30;
+const REMEMBER_MAX_AGE = REMEMBER_DAYS * 24 * 60 * 60;
+export const REMEMBER_COOKIE = 'sc_auth';
+
+// cookie 比對用子字串匹配。要命中就得讓 Cookie 標頭裡含有
+// "sc_auth=<那串亂數>"，而那串亂數是 32 bytes 的 CSPRNG —— 不知道它就構造不出來。
+export const rememberMatcher = (secret) =>
+  '*' + REMEMBER_COOKIE + '=' + secret + '*';
+
+export const rememberSetCookie = (secret) =>
+  'header @sc_nocookie +Set-Cookie ' +
+  q(REMEMBER_COOKIE + '=' + secret + '; Path=/; Max-Age=' + REMEMBER_MAX_AGE +
+    '; Secure; HttpOnly; SameSite=Lax');
+
+// 密碼區塊。users 空的就整段不產生。
+//
+// **Set-Cookie 一定要包在 route 裡面，這不是風格問題。**
+//
+// Caddy 預設的 directive 順序把 header(60) 排在 basic_auth(75) **前面**
+// （caddyconfig/httpcaddyfile/directives.go）。直接寫成同一層的話，header 會先
+// 掛上 ResponseWriter，然後把 Set-Cookie 加到 basic_auth 吐出的 **401** 上面 ——
+// 等於把祕密送給任何一個亂試密碼的人，一次就拿到通行證。
+//
+// 實測確認過：不包 route 時 `curl -u alice:WRONG` 拿到的是
+//     HTTP/1.1 401 Unauthorized
+//     Set-Cookie: sc_auth=<祕密>
+// 包進 route 之後 401 就乾淨了 —— route 保證照書寫順序執行，basic_auth 失敗
+// 直接短路，header 根本跑不到。
+function authLines(users, secret, inRoute) {
+  const names = Object.keys(users || {});
+  if (!names.length) return [];
+  const lines = [];
+  if (!secret) {
+    // 沒有祕密就退回純 basic_auth。少了便利，不會少了安全。
+    lines.push('basic_auth {');
+    for (const u of names) lines.push('\t' + u + ' ' + users[u]);
+    lines.push('}');
+    return lines;
+  }
+  lines.push('# 記住登入 ' + REMEMBER_DAYS + ' 天：通過密碼之後補發 cookie，之後帶 cookie 就放行');
+  lines.push('@sc_nocookie not header Cookie ' + q(rememberMatcher(secret)));
+  lines.push('basic_auth @sc_nocookie {');
+  for (const u of names) lines.push('\t' + u + ' ' + users[u]);
+  lines.push('}');
+  if (inRoute) {
+    // proxy 模式整段本來就在 route 裡，順序已經有保證。
+    lines.push(rememberSetCookie(secret));
+  } else {
+    // serve 模式不能把 basic_auth 移進 route —— 那會讓它從 75 掉到 87，
+    // 排到 app drop-in 的 handle(85) 後面，等於 apps\<label>\*.caddy 裡的
+    // 路由不再受密碼保護。所以只把 header 包進 route：它跑在 basic_auth
+    // 成功之後、file_server（順序表最後）寫出回應之前。
+    lines.push('route {');
+    lines.push('\t' + rememberSetCookie(secret));
+    lines.push('}');
+  }
+  return lines;
+}
+
 // ---------------------------------------------------------------- edge 的網域
 //
 // 一個網域一個檔，而且**自給自足** —— 裡面不參照任何其他網域的東西。
@@ -174,11 +246,10 @@ export function renderEdgeSite(label, d) {
     if (d.content) body.push('import webroot ' + q(win(d.content)));
     // 整站的密碼。某條路徑要另外一組密碼是 caddyctl auth 的事 ——
     // 那條規則放在 conf/auth/<label>/，上面已經 import 進來了。
-    if (d.users && Object.keys(d.users).length) {
+    const auth = authLines(d.users, d.remember, false);
+    if (auth.length) {
       body.push('');
-      body.push('basic_auth {');
-      for (const [u, h] of Object.entries(d.users)) body.push('\t' + u + ' ' + h);
-      body.push('}');
+      body.push(...auth);
     }
     return wrap(body);
   }
@@ -204,15 +275,14 @@ export function renderEdgeSite(label, d) {
       body.push('\treverse_proxy ' + d.target);
       body.push('}');
     }
+    // proxy 模式整段包在 route 裡：這是 Set-Cookie 不會漏到 401 上的保證。
     body.push('handle {');
-    if (d.users && Object.keys(d.users).length) {
-      body.push('\tbasic_auth {');
-      for (const [u, h] of Object.entries(d.users)) body.push('\t\t' + u + ' ' + h);
-      body.push('\t}');
-    }
+    body.push('	route {');
+    for (const l of authLines(d.users, d.remember, true)) body.push('		' + l);
     // 不要動 Host header —— WebDAV 的 MOVE/COPY 會拿 Destination 的 host 去比對
     // 後端看到的 r.Host，改了就 502。Caddy 預設就是原樣傳。
-    body.push('\treverse_proxy ' + d.target);
+    body.push('		reverse_proxy ' + d.target);
+    body.push('	}');
     body.push('}');
     return wrap(body);
   }
