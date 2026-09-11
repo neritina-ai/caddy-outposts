@@ -29,8 +29,8 @@
 C:\Caddy\conf\sites\<label>.caddy     一個網域一個檔，自給自足
 C:\Caddy\conf\global.caddy            duckdns token 在這裡（Caddy 本來就要用）
 C:\Caddy\conf\manifest.json           這台機器的非祕密描述
-C:\Caddy\conf\_panel.html            控制面板（/panel），caddyctl 產生
-C:\Caddy\conf\_configs.html          /c/ 的索引，caddyctl 產生
+C:\Caddy\conf\_panel.html            控制面板（/_），caddyctl 產生
+C:\Caddy\conf\_configs.html          /_/c/ 的索引，caddyctl 產生
 ```
 
 所以每個指令只需要**一台機器的資訊**，做完就沒有東西要留著：
@@ -784,7 +784,7 @@ node src\caddyctl.mjs edge set --name <label> ... --reload
 > **這件事以前不是這樣。** 控制面板原本就是 `<槽>\www\index.html` 本身 ——
 > 也就是「這台的首頁」跟「你自己的首頁」是同一個檔，只能活一個。放自己的
 > `index.html` 就等於把面板刪掉，而且看起來像產品壞了、不像自己覆蓋了什麼。
-> 面板改成獨立的 `/panel` 之後，你怎麼動內容目錄都不會弄丟它。
+> 面板改成獨立的 `/_` 之後，你怎麼動內容目錄都不會弄丟它。
 
 `conf\` 底下那幾個是產品的地盤（`_panel.html`、`_configs.html`、`_md.html`），
 標題也都寫著「不要手動編輯」—— 改了下次 `node init` 或 `install.ps1` 會蓋掉。
@@ -868,11 +868,11 @@ sc.exe delete actiond
 
 | URL | 是什麼 |
 |---|---|
-| `/panel` | **控制面板** —— 這台有哪些網址，一頁看完 |
+| `/_` | **控制面板** —— 這台有哪些網址，一頁看完 |
 | `/` | 內容根目錄（瀏覽 + WebDAV 讀寫）—— **這是你的**，放什麼都行 |
 | `/p/`、`/w/` | `<槽>\projects`、`<槽>\workspaces` |
 | `/a/` | actions 資料夾（可用 WebDAV 編輯 action） |
-| `/c/` | **這台裝了哪些工具** —— 家目錄裡的設定檔，改過名字集中在一起 |
+| `/_/c/` | **這台裝了哪些工具** —— 家目錄裡的設定檔，改過名字集中在一起 |
 | `/run` | action 面板 |
 | `/run/<名稱>` | 執行某個 action |
 | `/pub/` | **公開唯讀，不需要密碼** |
@@ -880,36 +880,45 @@ sc.exe delete actiond
 
 某一台上實際的對應關係，看那台的 `C:\Caddy\conf\manifest.json`（`node.url_map`）。
 
-`/panel` 是產生出來的，所以不會說謊：static 的機器不會列出 `/p/ /w/ /a/`，
-沒有家目錄設定的機器不會列出 `/c/`。
+`/_` 是產生出來的，所以不會說謊：static 的機器不會列出 `/p/ /w/ /a/`，
+沒有家目錄設定的機器不會列出 `/_/c/`。
+
+產品的頁面全部收在 `/_` 底下，所以它只從你的命名空間拿走**一個**名字 ——
+`D:\www\panel\`、`D:\www\c\` 都還是你的，以後再加任何產品頁面也不會再佔用。
+底線在這個專案裡本來就代表「不是使用者的東西」（`_node.caddy`、`_panel.html`、
+`_md.html` 都是），所以這是延續慣例。
+
+掛載點（`/p/` `/w/` `/a/` `/pub/`）沒辦法比照辦理，它們必須是路徑：WebDAV 的
+PROPFIND 和 MOVE 的 `Destination`、目錄列表的相對連結、Markdown 渲染的內部
+子請求，全都是路徑導向的。
 
 ---
 
-## `/c/` —— 這台裝了哪些工具
+## `/_/c/` —— 這台裝了哪些工具
 
 家目錄裡的設定檔，集中在一個網址，而且**改過名字**：
 
 ```
-/c/openclaw.json   ->  ~\.openclaw\openclaw.json
-/c/claude.json     ->  ~\.claude\settings.json
-/c/codex.toml      ->  ~\.codex\config.toml
+/_/c/openclaw.json   ->  ~\.openclaw\openclaw.json
+/_/c/claude.json     ->  ~\.claude\settings.json
+/_/c/codex.toml      ->  ~\.codex\config.toml
 ```
 
 改名是必要的 —— 好幾個工具的設定檔都叫 `settings.json`，擺在一起分不出誰是誰。
 
 **只列出這台真的存在的檔案**，而且是每次瀏覽時即時判斷的。所以之後在這台裝了
-新工具，不必 reload、不必重跑 caddyctl，`/c/` 自己就會多一行。也就是說這一頁
+新工具，不必 reload、不必重跑 caddyctl，`/_/c/` 自己就會多一行。也就是說這一頁
 等於「這台裝了哪些東西」的清單。
 
 可以直接用 WebDAV 編輯（`PUT`）。改完通常還要重啟對應的服務，看 `/run`。
 
 **清單是 `src\render.mjs` 裡的 `CONFIG_FILES`。** 沒有排除邏輯，也刻意不做 ——
-一個檔案要不要出現在 `/c/`，就看它有沒有寫在那張表裡。加行之前想一下那個檔裡
+一個檔案要不要出現在 `/_/c/`，就看它有沒有寫在那張表裡。加行之前想一下那個檔裡
 有沒有金鑰：`.npmrc`、`.aws\credentials`、`.ssh\id_*`、`.claude\.credentials.json`
 這類純憑證檔就是為此不在表上。
 
-> **同目錄的鄰居打不到。** 每個檔案各自一個確切路徑的 `handle`（不是 `/c/*`），
-> 所以 `/c/.credentials.json` 是 404，即使那個檔就在 `.claude\` 底下。
+> **同目錄的鄰居打不到。** 每個檔案各自一個確切路徑的 `handle`（不是 `/_/c/*`），
+> 所以 `/_/c/.credentials.json` 是 404，即使那個檔就在 `.claude\` 底下。
 > 這是安全性的關鍵 —— 改成萬用字元就等於把整個家目錄開出去。
 
 家目錄是 `caddyctl node init` 當下抓的（`os.homedir()`），寫進 manifest。

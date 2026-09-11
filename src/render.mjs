@@ -298,7 +298,7 @@ export function renderEdgeSite(label, d) {
 // 是同一個檔，兩者只能活一個。使用者放自己的 index.html 就等於把面板刪掉，
 // 而且看起來像產品壞了，不像自己覆蓋了什麼。（實際踩過兩次。）
 //
-// 現在面板產生到 conf\_panel.html，掛在 /panel。內容根目錄從此完全是使用者的：
+// 現在面板產生到 conf\_panel.html，掛在 /_。內容根目錄從此完全是使用者的：
 // 放什麼都行，不放就是目錄列表。
 //
 // 順帶一個好處：面板改成從設定算出來，就不會說謊了 —— static 的機器沒有
@@ -350,7 +350,7 @@ export function renderPanel(machine, n) {
   }
 
   if (n.home) {
-    cards.push(card('/c/', '⚙️', '/c/', '這台裝了哪些工具，以及它們的設定檔'));
+    cards.push(card('/_/c/', '⚙️', '/_/c/', '這台裝了哪些工具，以及它們的設定檔'));
   }
 
   cards.push(card('/pub/', '🌐', '/pub/', '對外公開唯讀，<b>不需要密碼</b>'));
@@ -433,7 +433,7 @@ export function splitConfigPath(home, rel) {
 // fileExists 的相對基準是 templates 的 root，設定裡會指到家目錄。
 export function renderConfigIndex(machine) {
   const rows = CONFIG_FILES.map(([name, rel, desc]) =>
-    '{{if fileExists ' + JSON.stringify(rel) + '}}<a class="card" href="/c/' + name + '">' +
+    '{{if fileExists ' + JSON.stringify(rel) + '}}<a class="card" href="/_/c/' + name + '">' +
     '<span><span class="n">' + name + '</span><br>' +
     '<span class="d">' + desc + ' —— <code>~/' + rel + '</code></span></span></a>{{end}}'
   );
@@ -502,10 +502,22 @@ export function renderNodeSite(n) {
   //
   // 真正不可信的是網際網路那一側，所以擋在那裡：**沒有密碼的 edge 站台不會把
   // /run 轉過來**（見 renderEdgeSite）。要遠端管理就給那個網域一組密碼。
-  // 控制面板。產生出來的頁面，掛在自己的網址 —— 不占用內容根目錄的 index.html。
+  // 控制面板。產生出來的頁面，掛在 /_ —— 不占用內容根目錄的 index.html。
+  //
+  // 為什麼是底線：產品的頁面每多一個就從使用者的命名空間拿走一個名字
+  // （/panel 一旦被佔用，D:\www\panel\ 就再也看不到了）。全部收進 /_ 底下，
+  // 就只佔用一個名字，而且以後再加任何產品頁面都不必再佔用。
+  //
+  // 底線在這個專案裡本來就是「這不是使用者的東西」的記號 —— _node.caddy、
+  // _panel.html、_configs.html、_md.html 全是這個意思，所以 /_ 是延續慣例，
+  // 不是新規則。
+  //
+  // 掛載點（/p/ /w/ /a/ /pub/）沒辦法比照辦理，它們必須是路徑：WebDAV 的
+  // PROPFIND / MOVE 的 Destination、目錄列表的相對連結、Markdown 渲染的
+  // httpInclude，全部是路徑導向的。
   body.push('# 控制面板（caddyctl 產生的 conf\\_panel.html）');
-  body.push('redir /panel/ /panel 308');
-  body.push('handle /panel {');
+  body.push('redir /_/ /_ 308');
+  body.push('handle /_ {');
   body.push('\troot * ' + q(win(CADDY_DIR + '/conf')));
   body.push('\trewrite * /_panel.html');
   body.push('\tfile_server');
@@ -533,8 +545,8 @@ export function renderNodeSite(n) {
   if (n.home) {
     const home = posix(n.home);
     body.push('# 家目錄裡的設定檔（清單見 render.mjs 的 CONFIG_FILES）');
-    body.push('redir /c /c/ 308');
-    body.push('handle /c/ {');
+    body.push('redir /_/c /_/c/ 308');
+    body.push('handle /_/c/ {');
     body.push('\troot * ' + q(win(CADDY_DIR + '/conf')));
     body.push('\trewrite * /_configs.html');
     // templates 的 root 跟 file_server 的 root 是分開的兩件事：樣板檔在 conf\，
@@ -546,7 +558,7 @@ export function renderNodeSite(n) {
     body.push('}');
     for (const [name, rel] of CONFIG_FILES) {
       const { dir, file } = splitConfigPath(home, rel);
-      body.push('handle /c/' + name + ' {');
+      body.push('handle /_/c/' + name + ' {');
       body.push('\timport cfgfile ' + q(win(dir)) + ' ' + file);
       body.push('}');
     }
@@ -628,8 +640,8 @@ export function urlMap(n) {
     m['/' + L.actions_mount + '/'] = win(CADDY_DIR + '/actions');
   }
   m['/pub/'] = win(L.public_dir);
-  m['/panel'] = 'control panel (' + win(CADDY_DIR + '/conf/_panel.html') + ')';
-  if (n.home) m['/c/'] = 'home config files (' + win(n.home) + ')';
+  m['/_'] = 'control panel (' + win(CADDY_DIR + '/conf/_panel.html') + ')';
+  if (n.home) m['/_/c/'] = 'home config files (' + win(n.home) + ')';
   m['/run'] = 'action daemon (reverse_proxy 127.0.0.1:' + n.actiond_port + ')';
   return m;
 }
