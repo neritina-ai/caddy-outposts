@@ -279,6 +279,7 @@ node src\caddyctl.mjs reload
 | `/_/c/` | 這台裝了哪些工具（家目錄裡的設定檔） | 要 |
 | `/_/run` | action 面板 | 要 |
 | `/_/run/<名稱>` | 執行某個 action | 要 |
+| `/_/run/cc-rc` | 幫這台上的 Claude Code session 開 Remote Control | 要 |
 | `/_/p/`、`/_/w/` | `<槽>\projects`、`<槽>\workspaces` | 要 |
 | `/_/a/` | actions 資料夾 | 要 |
 
@@ -339,6 +340,25 @@ curl.exe -X POST http://127.0.0.1:9001/run/caddy-reload
 
 > 含中文的 `.ps1` 一定要存成 **UTF-8 with BOM**，否則 PowerShell 5.1 會當成
 > 系統 ANSI 讀，然後安靜地解析失敗。樣板在 `actions\_template.ps1`。
+
+腳本開頭加 `# @page`，它就不是一個動作，而是**一頁網頁**：method、query
+string 和表單 body 交給腳本，stdout 原樣當 HTML 送出去。一個檔案一個網址，
+不用開埠、不用寫 `.caddy` 片段、不用 reload。`actions\cc-rc.mjs` 是現成的例子。
+
+### 忘記開 Remote Control 的時候
+
+人在外面才想起來某個 Claude Code session 沒開 `/rc`，打開 `/_/run/cc-rc`：
+
+它列出這台機器上所有的 session，每一列是**專案目錄、那個對話的最後一句話、最後
+活動時間**——最後一句話是為了核對：在手機上點進某個 session，第一眼看到的就是
+它。勾選的會**結束後用同一份對話重新開啟**，新的那個帶著 Remote Control，
+手機上就看得到。同一個 session、同一份對話。
+
+- 執行中的不給勾 —— 重開會把正在跑的那一輪丟掉。停在對話框上的可以勾，
+  它沒有在做事，而且在外面的時候那正是最需要救的一種
+- 開啟時給的 `--model`／`--effort`／`--add-dir` 不會跟著回來，輸入框裡沒送出的字也是
+- 頁面上看不出哪些已經有 Remote Control（沒有指令問得到）。用手機上看不看得到
+  來判斷就好，勾到已經有的也不會怎麼樣，就是斷線重連
 
 ### 套用設定變更
 

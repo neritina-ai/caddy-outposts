@@ -12,6 +12,11 @@
 //      # @desc    停掉再重新拉起來
 //      # @group   hello
 //      # @confirm            <- 用 GET 開網址時先出確認頁，避免誤觸／預抓
+//      # @page               <- 這支腳本自己就是一個網頁，見下面 @page 那段
+//
+//  @page：一個檔案 = 一個動態網頁。腳本從環境變數拿到 ACTION_METHOD、
+//  ACTION_QUERY、ACTION_SELF，從 stdin 拿到表單 body，stdout 原樣當 HTML 送出。
+//  輸入的驗證是腳本自己的責任 —— actiond 只負責轉交。
 //
 //  環境變數：ACTIONS_DIR ACTION_PORT ACTION_HOST ACTION_TOKEN ACTION_TIMEOUT_MS
 //            ACTION_ALLOW  逗號分隔的 CIDR 白名單 —— HOST 不綁 loopback 時務必設定
@@ -106,14 +111,14 @@ async function listActions() {
     const ext = path.extname(f).toLowerCase();
     if (!RUNNERS[ext] || f.startsWith('_') || f.startsWith('.')) continue;
     const id = path.basename(f, ext);
-    const meta = { id, file: f, ext, title: id, desc: '', group: '', confirm: false };
+    const meta = { id, file: f, ext, title: id, desc: '', group: '', confirm: false, page: false };
     try {
       const head = (await readFile(path.join(ACTIONS_DIR, f), 'utf8')).split(/\r?\n/).slice(0, 25);
       for (const line of head) {
-        const m = /^\s*(?:#|\/\/|rem)\s*@(title|desc|group|confirm)\b[ \t]*(.*)$/i.exec(line);
+        const m = /^\s*(?:#|\/\/|rem)\s*@(title|desc|group|confirm|page)\b[ \t]*(.*)$/i.exec(line);
         if (!m) continue;
         const k = m[1].toLowerCase(), v = m[2].trim();
-        if (k === 'confirm') meta.confirm = v === '' || /^(1|true|yes)$/i.test(v);
+        if (k === 'confirm' || k === 'page') meta[k] = v === '' || /^(1|true|yes)$/i.test(v);
         else meta[k] = v;
       }
     } catch { /* 讀不到就用預設值 */ }
@@ -122,31 +127,66 @@ async function listActions() {
   return out.sort((a, b) => (a.group + a.id).localeCompare(b.group + b.id));
 }
 
-function run(act) {
+// 讀請求的 body，@page 的腳本從 stdin 拿到它。
+// 有上限：這是一個控制台，不是上傳空間。超過就回 413，不要默默截斷 ——
+// 截斷過的表單資料看起來仍然像合法的表單資料。
+function readBody(req, limit = 1000000) {
+  return new Promise(resolve => {
+    if (req.method === 'GET' || req.method === 'HEAD') return resolve('');
+    const parts = [];
+    let n = 0, over = false;
+    req.on('data', d => {
+      n += d.length;
+      if (n > limit) { over = true; req.destroy(); return; }
+      parts.push(d);
+    });
+    req.on('end', () => resolve(over ? null : Buffer.concat(parts).toString('utf8')));
+    req.on('error', () => resolve(over ? null : ''));
+  });
+}
+
+function run(act, ctx) {
   return new Promise(resolve => {
     const file = path.join(ACTIONS_DIR, act.file);
     const [cmd, args] = RUNNERS[act.ext](file);
     const started = Date.now();
     let killed = false, child;
     try {
-      child = spawn(cmd, args, { cwd: ACTIONS_DIR, windowsHide: true });
+      child = spawn(cmd, args, {
+        cwd: ACTIONS_DIR,
+        windowsHide: true,
+        env: ctx ? { ...process.env, ...ctx.env } : process.env,
+      });
     } catch (e) {
       return resolve({ code: -1, ms: 0, output: 'spawn failed: ' + e.message });
     }
+    // 只有 @page 才餵 stdin。一般的 action 維持原樣（管線開著沒人寫），
+    // 改掉會讓「腳本自己讀 stdin」這件事的行為在升級後不一樣。
+    if (ctx) child.stdin.end(ctx.body || '');
     const timer = setTimeout(() => { killed = true; child.kill(); }, TIMEOUT);
 
-    // 收原始 bytes，最後才一次解碼 —— 中間切開解碼會把多位元組字元切壞
-    const chunks = [];
-    let bytes = 0;
-    const cap = d => {
+    // 收原始 bytes，最後才一次解碼 —— 中間切開解碼會把多位元組字元切壞。
+    //
+    // stdout 另外留一份：@page 是拿 stdout 當網頁送出去的，
+    // 混進 stderr 就會把 HTML 弄壞（PowerShell 的 Write-Error、node 的 warning
+    // 都會跑到 stderr 去）。log 模式要的仍然是兩條合在一起、照時間順序的那份。
+    const chunks = [], outChunks = [];
+    let bytes = 0, outBytes = 0;
+    const trim = (arr, n) => {
+      while (n > 200000 && arr.length > 1) n -= arr.shift().length;
+      return n;
+    };
+    const cap = (d, isOut) => {
       const b = Buffer.isBuffer(d) ? d : Buffer.from(String(d), 'utf8');
       chunks.push(b);
-      bytes += b.length;
-      while (bytes > 200000 && chunks.length > 1) bytes -= chunks.shift().length;
+      bytes = trim(chunks, bytes + b.length);
+      if (!isOut) return;
+      outChunks.push(b);
+      outBytes = trim(outChunks, outBytes + b.length);
     };
-    child.stdout.on('data', cap);
-    child.stderr.on('data', cap);
-    child.on('error', e => cap('\n[spawn error] ' + e.message));
+    child.stdout.on('data', d => cap(d, true));
+    child.stderr.on('data', d => cap(d, false));
+    child.on('error', e => cap('\n[spawn error] ' + e.message, false));
 
     // 以 'exit'（行程結束）為準，不是 'close'（管線關閉）。
     //
@@ -169,6 +209,7 @@ function run(act) {
         code, ms: Date.now() - started,
         output: decodeOutput(Buffer.concat(chunks))
           + (killed ? '\n[timeout ' + TIMEOUT + 'ms — killed]' : ''),
+        stdout: decodeOutput(Buffer.concat(outChunks)),
       });
     };
     child.on('close', finish);
@@ -230,9 +271,13 @@ async function panel(base) {
   let group = null;
   for (const h of acts) {
     if (h.group !== group) { group = h.group; if (group) body += '<h2>' + esc(group) + '</h2>'; }
+    // @page 的是一頁，不是一個動作 —— 給連結，不要給「執行」按鈕。
+    // 按鈕會 POST，而一支頁面腳本第一次被打開時該收到的是 GET。
+    const go = h.page
+      ? '<a class="btn go" href="' + base + '/' + encodeURIComponent(h.id) + '">開啟</a>'
+      : runForm(base, h.id, '執行', 'go');
     body += '<div class="act"><div class="t"><div class="n">' + esc(h.title) + '</div>' +
-      '<div class="d">' + esc(h.desc || h.file) + '</div></div>' +
-      runForm(base, h.id, '執行', 'go') + '</div>';
+      '<div class="d">' + esc(h.desc || h.file) + '</div></div>' + go + '</div>';
   }
   return PAGE('Actions', body);
 }
@@ -258,6 +303,42 @@ const server = http.createServer(async (req, res) => {
 
   const wantsJson = url.searchParams.has('json');
   const wantsHtml = !wantsJson && /text\/html/.test(req.headers.accept || '');
+
+  // @page 的 action：它自己就是一個網頁。
+  //
+  // actiond 平常做的是「跑完把 log 貼出來」—— 輸出會被 esc 進 <pre>，而請求裡
+  // 的任何東西都不給腳本。@page 把這兩件事都反過來：method、query string 和
+  // 表單 body 交給腳本，stdout 原樣當 HTML 送出去。
+  //
+  // 於是「一個檔案 = 一個網址」對動態頁也成立：丟一支 .mjs 進 actions 目錄就
+  // 有一頁，不用開埠、不用寫 .caddy 片段、不用 reload，也沒有常駐行程要顧。
+  //
+  // 代價要講明白：**輸入的驗證變成腳本自己的責任**。actiond 只負責轉交，
+  // 它不知道那支腳本收什麼形狀的東西。所以 @page 的腳本要把收到的東西
+  // 一律當成不可信的。這條在 DESIGN.md 的「為什麼這樣是安全的」裡。
+  if (act.page) {
+    const body = await readBody(req);
+    if (body === null) return send(413, 'text/plain; charset=utf-8', '請求太大');
+    // 單飛鎖（running）不套用在頁面上：兩個 GET 不該互相 409。
+    const r = await run(act, {
+      body,
+      env: {
+        ACTION_METHOD: req.method,
+        ACTION_QUERY: url.search.replace(/^\?/, ''),
+        // 腳本要拿這個組自己的 <form action>。前綴是請求告訴我們的，
+        // 不是寫死的 —— 理由見上面 BASE_RE 那段。
+        ACTION_SELF: base + '/' + act.id,
+      },
+    });
+    if (r.code !== 0) {
+      return send(500, 'text/html; charset=utf-8', PAGE(act.title,
+        '<h1>' + esc(act.title) + '</h1>' +
+        '<p class="bad">這一頁的腳本以 exit ' + r.code + ' 結束。</p>' +
+        '<pre>' + esc(r.output || '(沒有輸出)') + '</pre>' +
+        '<p class="bar"><a href="' + base + '">← 所有 action</a></p>'));
+    }
+    return send(200, 'text/html; charset=utf-8', r.stdout);
+  }
 
   // @confirm 的 action：用 GET 開網址時只給確認頁，
   // 避免瀏覽器預抓／聊天軟體展開連結預覽就把它觸發掉。

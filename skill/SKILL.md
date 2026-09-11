@@ -179,9 +179,11 @@ exit 0
 
 3. **底線開頭的檔案不會被列成 action**，可以拿來放範本或共用函式。
 
-4. **需要「使用者身分」的指令要走橋接。** actiond 是以 LOCAL SYSTEM 執行的服務，
-   裝在使用者層級的工具（`%APPDATA%` 底下的 npm 全域套件、使用者的排程工作）
-   用 SYSTEM 跑會讀到錯的 profile，甚至根本找不到執行檔：
+4. **需要「使用者身分」的指令要走橋接。** actiond 是服務，跑在 Windows session 0；
+   安裝時沒指定帳號的話它還是 LOCAL SYSTEM。裝在使用者層級的工具（`%APPDATA%`
+   底下的 npm 全域套件、使用者的排程工作）用錯的身分跑會讀到錯的 profile，
+   甚至根本找不到執行檔。而且**服務開出來的視窗使用者在桌面上看不到** ——
+   要開使用者看得見的程式，非走橋接不可：
 
    ```powershell
    . "$PSScriptRoot\_userbridge.ps1"
@@ -189,7 +191,32 @@ exit 0
    exit $global:UserExitCode
    ```
 
-   這需要使用者處於登入狀態。
+   `.mjs` 沒辦法直接呼叫那個 PowerShell 函式，用 `_asuser.ps1` 這個轉接頭
+   （指令和輸出都走檔案，管線會把中文壓成系統 OEM codepage）。
+
+   兩種都需要使用者處於登入狀態。
+
+### 一頁網頁：`@page`
+
+腳本開頭加 `# @page`，它就不是一個動作，而是一頁網頁 —— 需要「勾選」「填一個
+名字」這種**要收使用者輸入**的東西時用它。
+
+| | 一般的 action | `@page` |
+|---|---|---|
+| 面板上 | 「執行」按鈕（POST） | 「開啟」連結（GET） |
+| 腳本拿到什麼 | 什麼都沒有 | `ACTION_METHOD`、`ACTION_QUERY`、`ACTION_SELF`，表單 body 從 stdin |
+| 輸出怎麼處理 | esc 進 `<pre>`，加上 exit code | **原樣當 HTML 送出去** |
+
+`ACTION_SELF` 是這一頁自己的網址，拿它組 `<form action>` —— 不要寫死
+`/_/run/…`，直接打 actiond 的埠時前綴是 `/run/…`，寫死會有一邊 404。
+
+**輸入的驗證是腳本自己的責任。** actiond 只負責轉交，它不知道那支腳本收什麼形狀
+的東西。收到的一律當成不可信的：只收自己認得的欄位、比對格式，而且**不要相信
+呼叫端送來的其他值** —— `cc-rc.mjs` 的表單只送 session id，pid 和工作目錄一律
+回頭跟 `claude agents --json` 要，否則那個 pid 就成了「請幫我砍掉這個行程」的
+任意參數。
+
+例子看 `actions\cc-rc.mjs`。
 
 ### 用 action 啟動背景服務
 

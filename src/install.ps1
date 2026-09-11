@@ -381,7 +381,21 @@ if (-not $bu) {
 if ($bu) {
     try {
         $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Dir\actiond\user-bridge.ps1`""
-        $pri = New-ScheduledTaskPrincipal -UserId $bu -LogonType Interactive -RunLevel Highest
+        # RunLevel 是 Limited，不是 Highest。這座橋的用途是「以登入中的使用者身分
+        # 執行」，不是「以管理員身分執行」—— 那是兩件事，給了 Highest 就把兩件事
+        # 綁在一起了。
+        #
+        # 而且提權是會傳染的：橋接跑什麼、什麼就是提權的，它再開出來的程式也是。
+        # 實測過一次 —— 用橋接開起來的 Claude Code session 整個變成管理員身分，
+        # 而它是開著 bypass permissions 的。那個 session 原本不是管理員。
+        #
+        # 副作用還不只安全：提權的行程，非提權的查詢者讀不到它的 PEB，
+        # 於是 claude agents --json 驗證不了它，就把它從清單裡拿掉了 ——
+        # 一個開得起來、RC 也連上了、但是列不出來的 session。
+        #
+        # 哪天真的有 action 需要管理員權限，那要另外一座橋、另外一個名字，
+        # 而且要在文件上寫明白。不要讓這一座悄悄地兼差。
+        $pri = New-ScheduledTaskPrincipal -UserId $bu -LogonType Interactive -RunLevel Limited
         $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
         Register-ScheduledTask -TaskName 'caddy-user-bridge' -Action $act -Principal $pri -Settings $set -Force | Out-Null
         $svc = New-Object -ComObject 'Schedule.Service'
