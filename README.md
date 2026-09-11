@@ -443,13 +443,17 @@ node src\caddyctl.mjs edge set --name <label> ... --reload
 Restart-Service actiond
 ```
 
-停不下來、或重啟後行為還是舊的，代表有殘留行程佔著埠：
+重啟之後行為還是舊的，代表有殘留行程佔著埠（服務被重裝過、或上一個實例沒收乾淨
+的時候會這樣）。停掉服務、確認沒人佔著 9001、再起來：
 
 ```powershell
 Stop-Service actiond -Force
-Get-NetTCPConnection -LocalPort 9001 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+Get-NetTCPConnection -LocalPort 9001 -State Listen -ErrorAction SilentlyContinue |
+    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 Start-Service actiond
 ```
+
+中間那行沒有輸出是正常的 —— 代表本來就沒有殘留，服務停掉就把埠放開了。
 
 ### 內容目錄是你的
 
