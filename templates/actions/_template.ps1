@@ -23,7 +23,28 @@
 #  輸出端不用擔心 —— actiond 會自動判斷 UTF-8 / 系統編碼。
 #
 #  路徑：用 Split-Path $PSScriptRoot -Parent 取得 caddy 目錄，不要寫死。
+#
+#  執行身分：actiond 跑在 NT AUTHORITY\LocalService 底下 —— 不是管理員，也不是
+#  你。所以：使用者層級的工具（%APPDATA% 底下的 npm 套件）找不到；建出來的檔案
+#  owner 是 LOCAL SERVICE；而且被明確設過權限的目錄寫不進去（/_/p/ 指到的專案
+#  目錄常常就是這樣）。以上任何一項咬到你，就走使用者身分的橋 —— 見下面。
 # ============================================================================
+
+# ----------------------------------------------------------------------------
+#  要以「登入中的使用者」身分做事（工具找得到、profile 是對的、產生的檔案 owner
+#  就是那個使用者），把整段丟進橋裡。@'...'@ 是不會展開變數的 here-string，
+#  結尾的 '@ 一定要頂在行首：
+#
+#      . "$PSScriptRoot\_userbridge.ps1"
+#      Invoke-AsUser @'
+#      [IO.File]::WriteAllText('D:\projects\hello.txt', 'hello', [Text.UTF8Encoding]::new($false))
+#      '@
+#      exit $global:UserExitCode
+#
+#  代價：需要使用者處於登入狀態，而且桌面上會閃過一個約 0.3 秒的視窗。那是
+#  互動式登入的副作用，也正是那個 token 之所以非提權的原因 —— 所以只有真的需要
+#  的 action 才走它，不要每支都加。
+# ----------------------------------------------------------------------------
 
 Write-Output "hello from action"
 exit 0

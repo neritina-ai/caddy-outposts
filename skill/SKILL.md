@@ -179,11 +179,22 @@ exit 0
 
 3. **底線開頭的檔案不會被列成 action**，可以拿來放範本或共用函式。
 
-4. **需要「使用者身分」的指令要走橋接。** actiond 是服務，跑在 Windows session 0；
-   安裝時沒指定帳號的話它還是 LOCAL SYSTEM。裝在使用者層級的工具（`%APPDATA%`
-   底下的 npm 全域套件、使用者的排程工作）用錯的身分跑會讀到錯的 profile，
-   甚至根本找不到執行檔。而且**服務開出來的視窗使用者在桌面上看不到** ——
-   要開使用者看得見的程式，非走橋接不可：
+4. **需要「使用者身分」的指令要走橋接。** actiond 是服務，跑在 Windows session 0，
+   身分是 `NT AUTHORITY\LocalService` —— **不是管理員，也不是你**。那是刻意的：
+   `actions\` 裡的東西等於可以用 HTTP 觸發的程式碼，所以 actiond 的權限等級
+   就是那個目錄的爆炸半徑。
+
+   三個會咬人的後果：
+
+   * 裝在使用者層級的工具找不到（`%APPDATA%` 底下的 npm 全域套件），
+     讀到的 profile 也是錯的。
+   * **它建出來的檔案 owner 是 `NT AUTHORITY\LOCAL SERVICE`，不是你。**
+   * **有些目錄它根本寫不進去。** 只從磁碟根目錄繼承到 `Authenticated Users:
+     Modify` 的地方（`C:\Caddy`、內容根目錄、workspaces）寫得進去；被明確設過
+     權限的地方寫不進去 —— `/_/p/` 指到的專案目錄常常就是這樣（實測：拒絕存取）。
+
+   以上任何一項咬到你就走橋。它以**登入中的使用者**身分執行，所以工具找得到、
+   profile 是對的、建出來的檔 owner 就是那個使用者：
 
    ```powershell
    . "$PSScriptRoot\_userbridge.ps1"
@@ -191,10 +202,32 @@ exit 0
    exit $global:UserExitCode
    ```
 
+   要寫一個屬於使用者的檔案就把整段丟進去（`@'...'@` 是不會展開變數的
+   here-string，`'@` 一定要頂在行首）：
+
+   ```powershell
+   . "$PSScriptRoot\_userbridge.ps1"
+   Invoke-AsUser @'
+   [IO.File]::WriteAllText('D:\projects\hello.txt', 'hello', [Text.UTF8Encoding]::new($false))
+   '@
+   exit $global:UserExitCode
+   ```
+
+   而且**服務開出來的視窗使用者在桌面上看不到** —— 要開使用者看得見的程式，
+   非走橋接不可。
+
    `.mjs` 沒辦法直接呼叫那個 PowerShell 函式，用 `_asuser.ps1` 這個轉接頭
    （指令和輸出都走檔案，管線會把中文壓成系統 OEM codepage）。
 
-   兩種都需要使用者處於登入狀態。
+   **代價**：橋是使用者互動 session 裡的排程工作，所以 (a) 需要使用者處於登入
+   狀態，(b) 桌面上會閃過一個約 0.3 秒的視窗。那個閃光不是瑕疵 —— 互動式登入
+   正是 `RunLevel Limited` 能給出非提權 token 的原因。（不必登入又沒有視窗的
+   `S4U` 排程工作實測是**管理員**，拿它當通用的「以使用者身分執行」通道等於把
+   提權管道接回來，所以不要。）
+
+   所以**只有真的需要的 action 才走橋**。`caddy-reload` / `caddy-rollback` /
+   `caddy-validate` / `caddy-status` / `host-health` 都不要動 —— 它們的價值正是
+   人不在家、沒有人登入的時候也能用。
 
 ### 一頁網頁：`@page`
 
