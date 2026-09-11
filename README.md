@@ -95,7 +95,8 @@ cd C:\skill-caddy
 .\src\install.ps1
 ```
 
-中途會問 actiond 要用哪個帳號跑（取消就是 LOCAL SYSTEM）。裝完應該看到：
+actiond 會被裝成以 `NT AUTHORITY\LocalService` 執行 —— 那是 Windows 給服務用的
+最小權限身分，不用密碼、不用建帳號。裝完應該看到：
 
 ```
 === 自我測試 ===
@@ -462,6 +463,25 @@ node src\caddyctl.mjs edge set --name <label> ... --reload
 # 系統管理員 PowerShell
 Restart-Service actiond
 ```
+
+> **actiond 不是以管理員執行的。** 它跑在 `NT AUTHORITY\LocalService` 底下 ——
+> Windows 給服務用的最小權限身分。那不是可調的選項：`install.ps1` 會去查那個身分
+> 實際的群組成員資格，發現它是 `Administrators` 的成員就**停下來什麼都不裝**。
+>
+> 理由是 actiond 的工作就是執行 `C:\Caddy\actions\` 裡的東西 —— 它本質上是一台
+> RCE 機器，權限等級直接等於那個目錄的爆炸半徑。而**服務登入不經過 UAC 過濾**：
+> 填一個管理員帳號進去，拿到的是完整、沒削過的管理員 token。
+>
+> 用別的帳號要自己指定，而且一樣會被檢查：
+>
+> ```powershell
+> .\src\install.ps1 -ActiondUser .\<帳號>
+> ```
+>
+> 代價是 actiond 讀不到你的使用者設定。需要使用者層級工具的 action
+> （`cc-rc`、`openclaw-gateway-restart`）改走使用者身分的橋接，**那條路要你處於
+> 登入狀態**。`caddy-reload` / `caddy-rollback` / `caddy-validate` / `caddy-status` /
+> `host-health` 不受影響 —— 它們不需要橋，人不在家也能用。
 
 重啟之後行為還是舊的，代表有殘留行程佔著埠（服務被重裝過、或上一個實例沒收乾淨
 的時候會這樣）。停掉服務、確認沒人佔著 9001、再起來：

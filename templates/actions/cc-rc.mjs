@@ -13,9 +13,10 @@
 // 代價是那個行程被換掉了，所以這些東西不會回來：正在跑的那一輪、啟動時給的
 // --model / --effort / --add-dir、輸入框裡還沒送出的字。
 //
-// 為什麼每一件事都走使用者身分的橋：actiond 可能是 LOCAL SYSTEM 在跑，那個身分
-// 的 %USERPROFILE% 是 systemprofile，claude agents --json 會回一個空陣列 ——
-// 而空陣列看起來跟「真的沒有 session」一模一樣。寧可慢一點，也不要安靜地說謊。
+// 為什麼每一件事都走使用者身分的橋：actiond 以 NT AUTHORITY\LocalService 執行
+// （2026-09 降權之後就不再是安裝者的帳號了），那個身分的 %USERPROFILE% 不是
+// 使用者的，claude agents --json 會回一個空陣列 —— 而空陣列看起來跟「真的沒有
+// session」一模一樣。寧可慢一點，也不要安靜地說謊。
 // 而且開視窗本來就非走它不可：服務在 session 0，那裡開的視窗使用者看不到。
 //
 // 這支檔案有兩個模式。頁面模式（actiond 呼叫）負責畫面與動作；--collect 模式
@@ -185,8 +186,9 @@ function asUser(command) {
 
 // 交換檔放在 <caddy>\logs\：橋接那端（使用者）和這端（actiond）都寫得進去，
 // 那是現成的事實 —— _userbridge.ps1 的 user-request.out 本來就在那裡。
-// 放 os.tmpdir() 不行：actiond 如果是 LOCAL SYSTEM，它的 temp 在 systemprofile
-// 底下，使用者那端寫不進去。
+// 放 os.tmpdir() 不行：actiond 的 temp 在它自己的服務 profile 底下
+// （LocalService 是 C:\Windows\ServiceProfiles\LocalService\...），
+// 使用者那端寫不進去。
 function sessionsViaBridge() {
   const out = path.resolve(path.dirname(process.argv[1]), '..', 'logs',
                            'cc-rc-' + randomUUID() + '.json');
@@ -205,14 +207,20 @@ function sessionsViaBridge() {
 // 先自己問，問不到才走橋。
 //
 // 橋是有代價的，而且那個代價使用者看得見：排程工作是在**使用者的互動 session**
-// 裡開一個 PowerShell，於是桌面上會閃過一個約 0.3 秒的 console 視窗。每開一次
-// 這一頁就閃一次，實在說不過去 —— 而列清單這件事，只要 actiond 是以使用者身分
-// 執行（建議的裝法），它自己就讀得到，一個視窗都不用開。
+// 裡開一個 PowerShell，於是桌面上會閃過一個約 0.3 秒的 console 視窗。
 //
-// 拿到空的才走橋：那正好是「這個身分看不到使用者的東西」的樣子（actiond 是
-// LOCAL SYSTEM 的話，%USERPROFILE% 在 systemprofile 底下，claude agents --json
-// 回的是空陣列）。真的一個 session 都沒有的時候會白走一趟，但那一趟的答案一樣
-// 是空的 —— 慢一點、閃一下，結論不變。
+// 拿到空的才走橋：那正好是「這個身分看不到使用者的東西」的樣子。真的一個
+// session 都沒有的時候會白走一趟，但那一趟的答案一樣是空的 —— 慢一點、閃一下，
+// 結論不變。
+//
+// **2026-09 之後這個快路徑實際上不會再命中。** actiond 降權成 LocalService 是
+// 為了不讓 actions\ 裡的東西以管理員身分執行，代價就是它讀不到使用者的 profile，
+// 於是每次都落到橋上、每次都閃一下。判斷式留著不改 —— 它本來就是對的，只是現在
+// 永遠走同一邊；而且 -ActiondUser 指定一個看得到使用者東西的帳號時它又會命中。
+//
+// 要把不閃這件事贏回來：另外註冊一個只讀資料的 S4U 排程工作（S4U 在 session 0，
+// 沒有視窗，而且使用者沒登入也能跑）。實測 S4U 是管理員，所以它跑的腳本必須放在
+// actiond 寫不到的地方，否則等於把剛拆掉的提權管道又接回去。見 DESIGN.md。
 //
 // 開視窗那一步沒有這個選擇：服務在 session 0，那裡開的視窗使用者看不到，
 // 非走橋不可。所以送出的時候還是會閃一下，但那是一個明確的動作，不是每次開頁面。
