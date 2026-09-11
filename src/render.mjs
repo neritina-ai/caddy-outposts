@@ -217,18 +217,13 @@ function authLines(users, secret, inRoute) {
 //
 // 授權只有一條規則：**保護 /_/*，其餘公開。**
 //
-// 以前這裡有四個特例（/pub/* 永遠免密碼、/run* 永遠不對匿名開放、
-// --public 可以再開洞、--allow-anonymous 又是另一個開關），四個湊起來沒有人
-// 記得住哪個蓋過哪個。現在 node 端已經把「機器」全部收進 /_/ 底下
-// （見 renderNodeSite），所以這裡只要守住那一個前綴就夠了。
+// node 端把「機器」全部收進 /_/ 底下（見 renderNodeSite），所以這裡只要守住
+// 那一個前綴就夠了。密碼的意思因此很單純：它是網際網路和那台機器之間的界線，
+// 不是內容的門鎖。
 //
 // **沒有密碼的網域不路由 /_/*。** 那不是使用者的政策選項，是產品的不變量：
-// /_/www/ /_/p/ /_/w/ 是可寫入的 WebDAV，/_/a/ 可以編輯 action 的腳本本身，
+// /_/p/ /_/w/ 是可寫入的 WebDAV，/_/a/ 可以編輯 action 的腳本本身，
 // /_/run 會執行它們。沒有密碼就把這些開到網際網路上，等於交出那台機器。
-// 這不是假設：這套系統自己就這樣裸奔過一次。
-//
-// 於是「沒給密碼」的意思回歸單純：**我的內容要公開**。它不再需要解釋為什麼
-// 不包含 /run，也不再需要一個叫 --allow-anonymous 的旗標去承認這件事。
 export function renderEdgeSite(label, d) {
   const host = fqdn(label);
   const wrap = (lines) => host + ' {\n' + indent(lines.join('\n')) + '\n}\n';
@@ -284,7 +279,7 @@ export function renderEdgeSite(label, d) {
 
   if (d.mode === 'serve') {
     // edge 自己服務的靜態站。**這裡沒有「機器」那一層** —— 它不是 node，
-    // 沒有 /_/www/ /_/p/ /_/run 那些東西。所以 /_ 只是保留字，一律 404。
+    // 沒有 /_/p/ /_/run 那些東西。所以 /_ 只是保留字，一律 404。
     //
     // 於是密碼在這個模式下的意思跟 proxy 不同：沒有機器可以保護，它保護的
     // 就是內容本身。那是唯一說得通的解釋，也保住了「我要一個只有我看得到的
@@ -344,7 +339,6 @@ export function renderPanel(machine, n) {
   priv.push(card('/_/run', '⚡', '/_/run', '執行主機上的動作'));
   if (n.home) priv.push(card('/_/c/', '⚙️', '/_/c/', '這台裝了哪些工具，以及它們的設定檔'));
   if (!n.static) {
-    priv.push(card('/_/www/', '📄', '/_/www/', win(L.content_root) + ' —— 同一個目錄，這裡可以寫'));
     const desc = { p: 'projects', w: 'workspaces' };
     for (const [prefix, root] of Object.entries(L.mounts)) {
       priv.push(card('/_/' + prefix + '/', prefix === 'p' ? '📦' : '🗂️', '/_/' + prefix + '/',
@@ -462,22 +456,16 @@ export function renderConfigIndex(machine) {
 
 // ---------------------------------------------------------------- node 的站
 //
-// **一條規則：`/_/` 底下是機器，其餘是你的公開網站。**
+// **一條規則：`/_/` 底下是機器，其餘是使用者的公開網站。**
 //
-// 原本這裡有四個各自獨立的規定：/pub/* 永遠免密碼、/run* 永遠不對匿名開放、
-// --public / --no-public 可以再開洞、--allow-anonymous 又是另一個開關。
-// 四個特例湊出來的東西，沒有人記得住哪個蓋過哪個。
+//     /            內容根目錄，唯讀公開
+//     /_/          這台機器：面板、設定檔、掛載點、執行動作
 //
-// 現在只有一條：**edge 只保護 /_/***，其餘全部公開。於是
+// 於是 node = static + /_/ 底下多幾個可寫入的掛載點，兩者的 / 完全一樣。
 //
-//     node = static + /_/ 底下多幾個掛載點
-//
-// 兩種機器的 / 行為一模一樣（唯讀公開的 webroot），差別只在 /_/ 底下有沒有
-// /_/www/ /_/p/ /_/w/ /_/a/。/pub/ 和 pubro 因此整個消失 —— 整個內容根目錄
-// 就是公開區，不必再挖一個子目錄當洞。
-//
-// 內容根目錄的可寫視圖搬到 /_/www/：同一個目錄兩個網址，公開的那個唯讀，
-// 要寫就得過 /_/ 的密碼。這是「/ 公開」和「WebDAV 不能裸奔」唯一能並存的形狀。
+// **WebDAV 只出現在 /_/ 底下。** 公開網站沒有 webdav directive —— 不是靠權限
+// 擋，是那個能力不存在。所以「知道某條路徑密碼的人可以改檔案」在這個架構下
+// 不可能發生；能寫入的人 = 知道整個網域密碼的人 = 管理員。
 export function renderNodeSite(n) {
   const L = nodeLayout(n.drive);
   const body = [];
@@ -539,9 +527,8 @@ export function renderNodeSite(n) {
     body.push('');
   }
 
-  // ---- /_/www/ /_/p/ /_/w/ /_/a/ 可寫入的掛載點（static 沒有）----
+  // ---- /_/p/ /_/w/ /_/a/ 可寫入的掛載點（static 沒有）----
   const mounts = n.static ? [] : [
-    ['www', L.content_root],
     ...Object.entries(L.mounts),
     [L.actions_mount, CADDY_DIR + '/actions'],
   ];
@@ -562,7 +549,7 @@ export function renderNodeSite(n) {
   body.push('');
 
   // ---- / 你的公開網站（static 和 node 完全一樣）----
-  body.push('# 站台根目錄 —— 你的公開網站，唯讀。要寫入走 /_/www/');
+  body.push('# 站台根目錄 —— 你的公開網站，唯讀');
   body.push('handle {');
   body.push('\timport webroot ' + q(win(L.content_root)) + ' ' + tpl);
   body.push('}');
@@ -598,7 +585,6 @@ export function urlMap(n) {
   if (n.home) m['/_/c/'] = 'home config files (' + win(n.home) + ')';
   m['/_/run'] = 'action daemon (reverse_proxy 127.0.0.1:' + n.actiond_port + ')';
   if (!n.static) {
-    m['/_/www/'] = win(L.content_root);
     for (const [prefix, root] of Object.entries(L.mounts)) m['/_/' + prefix + '/'] = win(root);
     m['/_/' + L.actions_mount + '/'] = win(CADDY_DIR + '/actions');
   }

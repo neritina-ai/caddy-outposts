@@ -260,8 +260,8 @@ function writeConfigIndex(dir, state, node) {
 // Caddyfile 骨架 —— **一律覆蓋，不是「不存在才寫」。**
 //
 // 這個檔是產品提供的（開頭就寫著「不要編輯」），裡面是 snippet 定義，
-// 所有跟這台機器有關的東西都在 conf\ 底下。原本這裡是 if (exists) return，
-// 結果是：產品加了新的 snippet，既有機器永遠拿不到 —— install.ps1 也只檢查
+// 所有跟這台機器有關的東西都在 conf\ 底下。**不能寫成 if (exists) return**：
+// 那樣的話產品加了新的 snippet，既有機器永遠拿不到 —— install.ps1 也只檢查
 // 它在不在，不會更新。git pull 之後重跑 node init 看起來成功，實際上還在用
 // 舊骨架。（實測踩到：加了 (cfgfile) 之後 reload 直接報 "File to import not
 // found: cfgfile"。硬錯誤算幸運的，換成別種改動就是安靜地跑舊行為。）
@@ -320,7 +320,7 @@ function selfAddresses() {
 }
 
 // edge 把一個網域轉給「自己的 80/443」= 請求繞回同一個 Caddy，同一個 site 區塊，
-// 無限迴圈。而且就算不迴圈也拿不到想要的東西：WebDAV、/pub、.md 渲染、/run
+// 無限迴圈。而且就算不迴圈也拿不到想要的東西：WebDAV、.md 渲染、/_/run
 // 都在 node 那一側，edge 上根本沒有那些 directive。
 //
 // 指到自己的**別的埠**是正當用法（把本機的一個 app 開一個網域出去），不擋。
@@ -330,7 +330,7 @@ function refuseSelfProxy(target, label, defaultContent) {
   if (port !== '80' && port !== '443') return;
   if (!selfAddresses().has(host.toLowerCase())) return;
   die(target + ' 是這台機器自己 —— 轉過去會繞回同一個 Caddy，變成無限迴圈。\n\n'
-    + '  edge 這台沒有 node 的功能：WebDAV、/pub、.md 自動渲染、/run 都在 node\n'
+    + '  edge 這台沒有 node 的功能：WebDAV、.md 自動渲染、/_/run 都在 node\n'
     + '  那一側。edge 自己能提供的只有 static file server。\n\n'
     + '  要在這台服務內容：\n'
     + '    caddyctl edge set --name ' + label + '\n'
@@ -563,12 +563,9 @@ async function cmdEdgeSet(f) {
   if (f.ip) {
     const target = String(f.ip).includes(':') ? String(f.ip) : String(f.ip) + ':80';
     refuseSelfProxy(target, label, defaultContent);
-    // 沒有密碼不再是錯誤，因為它已經不危險了：那台機器本身在 /_/ 底下，
-    // 而沒有密碼的網域**不路由 /_/***（見 renderEdgeSite）。所以「沒給密碼」
-    // 的意思很單純 —— 那台的公開網站要公開。講一聲就好，不必攔。
-    //
-    // 這就是 --allow-anonymous 消失的原因：它存在是為了讓使用者承認
-    // 「我知道我把可寫入的 WebDAV 開到網路上了」，而現在那件事不會發生。
+    // 不給密碼是合法的，而且不危險：那台機器本身在 /_/ 底下，而沒有密碼的
+    // 網域**不路由 /_/***（見 renderEdgeSite）。所以「沒給密碼」的意思很單純
+    // —— 那台的公開網站要公開。
     def = { mode: 'proxy', target, users: usersFrom(f, dir, label) };
   } else if (f.hold) {
     def = { mode: 'hold' };
@@ -945,7 +942,7 @@ const USAGE = `caddyctl —— 一次設定一台機器，或一個網域
       （不給）                  這台自己服務靜態內容，目錄預設
                                 ${win(edgeContentDefault(NODE_DEFAULTS.drive, '<label>'))}
       --content <目錄>          同上，但自己指定目錄
-      --ip <位址[:埠]>          轉給另一台 node —— WebDAV、/pub、.md 渲染、
+      --ip <位址[:埠]>          轉給另一台 node —— WebDAV、.md 渲染、
                                 /run 只有 node 那一側有
       --hold                    還沒指派主機（503 佔位，但憑證照樣簽發）
     加上（可選）—— 不加就是公開的，任何人都看得到：

@@ -86,7 +86,6 @@ C:\Caddy\conf\manifest.json      這台機器的事實來源
 | 網址 | 目錄 | |
 |---|---|---|
 | `/` | `<槽>\www` | 公開，唯讀 |
-| `/_/www/` | `<槽>\www` | 同一個目錄，要密碼，可寫 |
 | `/_/p/` | `<槽>\projects` | 要密碼 |
 | `/_/w/` | `<槽>\workspaces` | 要密碼 |
 
@@ -322,10 +321,8 @@ node src\caddyctl.mjs edge set --name recordings --password police:123
 所以「不給密碼」的意思很單純：**那個網域的內容要公開**。它不會順帶把機器也
 開出去 —— 沒有密碼的網域，`/_/*` 整段不路由（直接回 404）。
 
-> 這就是 `--allow-anonymous`、`--public`、`--no-public` 三個旗標消失的原因。
-> 它們存在是因為「公開」和「危險」以前綁在一起：內容要公開就得連 WebDAV 和
-> `/run` 一起開出去，所以需要一個旗標讓你承認、再兩個旗標去挖洞和補洞。
-> 現在那兩件事在網址上就分開了，三個旗標也就沒有東西可以表達。
+> **WebDAV 只出現在 `/_/` 底下**，公開網站那一側沒有寫入能力 —— 不是靠權限擋，
+> 是那個能力不存在。所以能改檔案的人 = 知道整個網域密碼的人 = 管理員。
 
 要把公開網站底下某一條路徑關起來，用 `caddyctl auth set --path`（見下）——
 static 和 node 都適用，因為它們在這件事上已經沒有差別。
@@ -421,7 +418,7 @@ node src\caddyctl.mjs reload
 重載（不斷線），並把這份設定存成 `Caddyfile.last-good`。
 
 > 這個指令存在的理由就是「不要在流程中間換工具」。它底下叫的是
-> `POST /run/caddy-reload`，而**那個網址會因為角色而不同** —— node 是
+> `POST /_/run/caddy-reload`，而**那個網址會因為角色而不同** —— node 是
 > `http://127.0.0.1/run/...`，edge 是 `http://127.0.0.1:9001/run/...`。
 > caddyctl 從 manifest 知道這台是什麼，所以你不用記。
 >
@@ -577,7 +574,7 @@ node src\caddyctl.mjs node init --static
 | `/` | 公開網站，唯讀 + `.md` 渲染 | **一樣** |
 | `/_` `/_/c/` | 控制面板、設定檔 | **一樣** |
 | `/_/run` | 主機動作 | **一樣**（保留,才變得回去） |
-| `/_/www/` `/_/p/` `/_/w/` `/_/a/` | 可寫入的 WebDAV 掛載點 | **沒有** |
+| `/_/p/` `/_/w/` `/_/a/` | 可寫入的 WebDAV 掛載點 | **沒有** |
 
 換句話說：**`--static` 就是把 `/_/` 底下那幾個可寫入的掛載點拿掉**，其餘完全相同。
 
@@ -724,11 +721,13 @@ https://myfiles.duckdns.org/w/
 
 ### 順帶一提
 
-`/` **不是** WebDAV —— 它是唯讀的公開網站。要從網路上寫入內容根目錄，
-走 `/_/www/`（同一個目錄，在密碼後面）。
+`/` **不是** WebDAV，`--static` 的機器則整台都沒有 WebDAV。
 
-這樣分是因為「公開」和「可寫」不能是同一個網址：整個 `/` 都不需要密碼，
-而不需要密碼的可寫入 WebDAV 等於把機器送人。
+**WebDAV 是管理員的工具**，只掛在 `/_/p/`、`/_/w/`、`/_/a/`。公開網站那一側
+根本沒有 `webdav` directive —— 不是靠權限擋，是那個能力不存在。所以公開網站
+只有三種能力：瀏覽、加密碼的瀏覽（`caddyctl auth set --path`）、`.md` 渲染。
+
+要放會被人改的東西，放 `<槽>\projects` 或 `<槽>\workspaces`。
 
 ---
 
@@ -778,11 +777,6 @@ node src\caddyctl.mjs edge set --name <label> ... --reload
 
 所以 `install.ps1` 對內容目錄只做兩件事：把目錄建出來，以及在**檔案不存在時**
 放一頁可以直接刪掉的起始頁。你改過的東西它不會碰。
-
-> **這件事以前不是這樣。** 控制面板原本就是 `<槽>\www\index.html` 本身 ——
-> 也就是「這台的首頁」跟「你自己的首頁」是同一個檔，只能活一個。放自己的
-> `index.html` 就等於把面板刪掉，而且看起來像產品壞了、不像自己覆蓋了什麼。
-> 面板改成獨立的 `/_` 之後，你怎麼動內容目錄都不會弄丟它。
 
 `conf\` 底下那幾個是產品的地盤（`_panel.html`、`_configs.html`、`_md.html`），
 標題也都寫著「不要手動編輯」—— 改了下次 `node init` 或 `install.ps1` 會蓋掉。
@@ -872,7 +866,6 @@ sc.exe delete actiond
 | `/_/c/` | **這台裝了哪些工具** —— 家目錄裡的設定檔，改過名字集中在一起 | 要 |
 | `/_/run` | action 面板 | 要 |
 | `/_/run/<名稱>` | 執行某個 action | 要 |
-| `/_/www/` | `<槽>\www` —— 同一個目錄，這裡可以寫 | 要 |
 | `/_/p/`、`/_/w/` | `<槽>\projects`、`<槽>\workspaces` | 要 |
 | `/_/a/` | actions 資料夾（可用 WebDAV 編輯 action） | 要 |
 
@@ -881,7 +874,7 @@ sc.exe delete actiond
 
 某一台上實際的對應關係，看那台的 `C:\Caddy\conf\manifest.json`（`node.url_map`）。
 
-`/_` 是產生出來的，所以不會說謊：static 的機器不會列出 `/_/www/ /_/p/ /_/w/ /_/a/`，
+`/_` 是產生出來的，所以不會說謊：static 的機器不會列出 `/_/p/ /_/w/ /_/a/`，
 沒有家目錄設定的機器不會列出 `/_/c/`。
 
 產品的東西全部收在 `/_` 底下，所以它只從你的命名空間拿走**一個**名字 ——
@@ -927,9 +920,9 @@ sc.exe delete actiond
 ## 出問題時
 
 ```powershell
-curl.exe -X POST http://127.0.0.1/run/caddy-status     # 先看這個
-curl.exe -X POST http://127.0.0.1/run/caddy-validate   # 設定語法
-curl.exe -X POST http://127.0.0.1/run/caddy-rollback   # 還原上一份可用的設定
+curl.exe -X POST http://127.0.0.1/_/run/caddy-status     # 先看這個
+curl.exe -X POST http://127.0.0.1/_/run/caddy-validate   # 設定語法
+curl.exe -X POST http://127.0.0.1/_/run/caddy-rollback   # 還原上一份可用的設定
 ```
 
 **寫壞設定不會讓站台掛掉。** `caddy-reload` 驗證失敗時完全不動作，而且正在跑的
