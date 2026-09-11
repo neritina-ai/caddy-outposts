@@ -13,7 +13,7 @@
 #  所以整包目錄搬到哪裡都能跑。
 #
 #  重載設定：caddy reload --config <這個檔> --adapter caddyfile
-#            或呼叫 action：POST /run/caddy-reload
+#            或呼叫 action：POST /_/run/caddy-reload
 # =============================================================================
 {
 	import conf/global.caddy
@@ -76,7 +76,7 @@
 			header Accept *text/html*
 		}
 		handle @mdview {
-			rewrite * /_md.html
+			rewrite * /md.html
 			root * {args[2]}
 			templates
 			file_server
@@ -116,29 +116,15 @@
 }
 
 # -----------------------------------------------------------------------------
-#  pubro <實體路徑> <URL 前綴>
+#  webroot <實體路徑> <markdown 樣板所在目錄>
 #
-#  公開唯讀。這是整個站台唯一不需要密碼的路徑（edge 會把它排除在認證之外），
-#  因為有些客戶端不會帶認證憑證（例如聊天軟體內嵌的 webview）。
+#  唯讀的公開網站：目錄列表、少尾斜線自動導正、.md 渲染成 HTML。
+#  沒有 WebDAV —— 要寫入是 fsdav 的事，而那掛在 /_/ 底下（有密碼）。
 #
-#  所以：**放進這個目錄的東西 = 對整個網際網路公開**。
-#  GET/HEAD 以外一律 405，而且不出目錄列表 —— 一定要有 index.html。
-# -----------------------------------------------------------------------------
-(pubro) {
-	route {
-		@notread not method GET HEAD
-		respond @notread "read-only" 405
-		uri strip_prefix {args[1]}
-		root * {args[0]}
-		file_server
-	}
-}
-
-# -----------------------------------------------------------------------------
-#  webroot <實體路徑>
-#
-#  給 edge 自己服務的靜態站用：目錄列表、少尾斜線自動導正、.md 交給
-#  同目錄下的 md.html 樣板渲染。
+#  第二個參數不能省。原本這個 snippet 只有一個參數，樣板寫死成「內容目錄底下的
+#  md.html」，而產生器從來沒有把樣板放進內容目錄過（它產生的是 conf\md.html）。
+#  結果 edge 自己服務的靜態站，**任何 .md 一律 404** —— 連 ?raw=1 都拿不到，
+#  因為 rewrite 在比對 Accept 之前就發生了。實測踩到的，從第一版就壞著。
 # -----------------------------------------------------------------------------
 (webroot) {
 	root * {args[0]}
@@ -147,15 +133,23 @@
 		file {path}/
 	}
 	redir @check_slash {path}/ 308
-	file_server browse
-	@md {
-		path *.md
-		file
+
+	# .md 只在瀏覽器來要（Accept: text/html）時才渲染，跟 fsdav 一致。
+	# 否則 curl / 下載工具拿到的會是 HTML 而不是原稿。?raw=1 可強制拿原始檔。
+	@mdview {
+		method GET HEAD
+		path *.md *.markdown
+		not query raw=*
+		header Accept *text/html*
 	}
-	handle @md {
-		templates
+	handle @mdview {
 		rewrite * /md.html
+		root * {args[1]}
+		templates
+		file_server
 	}
+
+	file_server browse
 }
 
 # =============================================================================

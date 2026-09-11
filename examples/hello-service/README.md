@@ -32,8 +32,8 @@ Copy-Item .\examples\hello-service\actions\*.ps1 C:\Caddy\actions\
 Copy-Item .\examples\hello-service\hello.caddy C:\Caddy\apps\hello.caddy
 
 # 4. 啟動服務，然後套用路由
-curl.exe -X POST http://127.0.0.1/run/hello-start
-curl.exe -X POST http://127.0.0.1/run/caddy-reload
+curl.exe -X POST http://127.0.0.1/_/run/hello-start
+curl.exe -X POST http://127.0.0.1/_/run/caddy-reload
 ```
 
 開 `/hello/` 就看得到。`/run` 面板上會多出一個 **hello** 群組。
@@ -45,9 +45,9 @@ curl.exe -X POST http://127.0.0.1/run/caddy-reload
 ## 移除
 
 ```powershell
-curl.exe -X POST http://127.0.0.1/run/hello-stop
+curl.exe -X POST http://127.0.0.1/_/run/hello-stop
 Remove-Item C:\Caddy\apps\hello.caddy
-curl.exe -X POST http://127.0.0.1/run/caddy-reload
+curl.exe -X POST http://127.0.0.1/_/run/caddy-reload
 Remove-Item -Recurse C:\Caddy\apps\hello-service
 Remove-Item C:\Caddy\actions\hello-*.ps1, C:\Caddy\actions\_hello.ps1
 ```

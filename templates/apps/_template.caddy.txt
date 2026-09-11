@@ -7,15 +7,16 @@
 #   }
 #
 # 存檔之後執行：
-#   curl -X POST http://127.0.0.1/run/caddy-reload
-# 或在瀏覽器打開 /run，按「驗證並重載 Caddy」。
+#   curl -X POST http://127.0.0.1/_/run/caddy-reload
+# 或在瀏覽器打開 /_/run，按「驗證並重載 Caddy」。
 #
 # 網址就是 http://<這台>/myapp（外網則是 edge 上對應的那個網域）。
 # 刪掉這個檔再 reload 就移除。
 #
 # 注意：
 #  * 路徑名稱不要跟已經被佔用的撞到。完整清單在
-#    C:\Caddy\conf\manifest.json 的 node.url_map 裡（通常是 / /p /w /a /run /pub）。
+#    C:\Caddy\conf\manifest.json 的 node.url_map 裡。
+#    產品的東西全在 /_ 底下，所以只要不叫 _ 就不會撞到。
 #  * 順序不用擔心：Caddy 依「路徑精確度」排序 handle，不是依檔名或行號。
 #  * app 本身要能在子路徑下運作。如果它寫死了以 / 為根（絕對路徑的
 #    /static/... /api/...），掛在 /myapp 底下會壞掉。

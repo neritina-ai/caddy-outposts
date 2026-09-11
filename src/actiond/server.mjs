@@ -204,24 +204,35 @@ const PAGE = (title, body) =>
   '<meta name="viewport" content="width=device-width,initial-scale=1">' +
   '<title>' + esc(title) + '</title><style>' + CSS + '</style><main>' + body + '</main></html>';
 
-const runForm = (id, label, cls) =>
-  '<form method="POST" action="/run/' + encodeURIComponent(id) + '">' +
+// 這支 daemon 被掛在哪個前綴底下，是**由請求告訴它的**，不是寫死的。
+//
+// 經過 Caddy 進來的是 /_/run/...（node 的站台設定把 /_/run 轉過來），
+// 直接打它自己的埠則是 /run/...（edge 沒有把它掛在 Caddy 底下）。
+// 同一支程式要在兩種入口下都產生正確的連結，唯一可靠的來源就是 req 自己。
+//
+// 寫死成 /_/run 會讓「直接打 9001」那條路徑的頁面連結全部 404；
+// 寫死成 /run 則是經過 Caddy 那條全部 404。所以兩個都不能寫死。
+const BASE_RE = /^(?:\/_)?\/run/;
+const baseOf = (pathname) => (BASE_RE.exec(pathname) || ['/run'])[0];
+
+const runForm = (base, id, label, cls) =>
+  '<form method="POST" action="' + base + '/' + encodeURIComponent(id) + '">' +
   '<button class="' + (cls || '') + '">' + label + '</button></form>';
 
-async function panel() {
+async function panel(base) {
   const acts = await listActions();
   if (!acts.length) {
     return PAGE('Actions', '<h1>Actions</h1><p>' + esc(ACTIONS_DIR) + ' 裡還沒有腳本。</p>' +
-      '<p class="bar"><a href="/a/">用 WebDAV 編輯 actions 目錄 →</a></p>');
+      '<p class="bar"><a href="/_/a/">用 WebDAV 編輯 actions 目錄 →</a></p>');
   }
   let body = '<h1>Actions</h1><div class="bar"><a href="/">🏠 首頁</a>' +
-    '<a href="/a/">📝 編輯 actions</a><span>' + acts.length + ' 個</span></div>';
+    '<a href="/_/a/">📝 編輯 actions</a><span>' + acts.length + ' 個</span></div>';
   let group = null;
   for (const h of acts) {
     if (h.group !== group) { group = h.group; if (group) body += '<h2>' + esc(group) + '</h2>'; }
     body += '<div class="act"><div class="t"><div class="n">' + esc(h.title) + '</div>' +
       '<div class="d">' + esc(h.desc || h.file) + '</div></div>' +
-      runForm(h.id, '執行', 'go') + '</div>';
+      runForm(base, h.id, '執行', 'go') + '</div>';
   }
   return PAGE('Actions', body);
 }
@@ -238,8 +249,9 @@ const server = http.createServer(async (req, res) => {
     return send(403, 'text/plain; charset=utf-8', 'bad token');
   }
 
-  const seg = decodeURIComponent(url.pathname.replace(/^\/run\/?/, '')).replace(/\/+$/, '');
-  if (!seg) return send(200, 'text/html; charset=utf-8', await panel());
+  const base = baseOf(url.pathname);
+  const seg = decodeURIComponent(url.pathname.replace(BASE_RE, '').replace(/^\//, '')).replace(/\/+$/, '');
+  if (!seg) return send(200, 'text/html; charset=utf-8', await panel(base));
 
   const act = (await listActions()).find(h => h.id === seg || h.file === seg);
   if (!act) return send(404, 'text/plain; charset=utf-8', 'no such action: ' + seg);
@@ -252,7 +264,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && act.confirm && !url.searchParams.has('force')) {
     return send(200, 'text/html; charset=utf-8', PAGE(act.title,
       '<h1>' + esc(act.title) + '</h1><p>' + esc(act.desc || act.file) + '</p><p>' +
-      runForm(act.id, '確定執行', 'go') + '</p><p class="bar"><a href="/run">← 返回</a></p>'));
+      runForm(base, act.id, '確定執行', 'go') + '</p><p class="bar"><a href="' + base + '">← 返回</a></p>'));
   }
 
   if (running.has(act.id)) {
@@ -271,8 +283,8 @@ const server = http.createServer(async (req, res) => {
     return send(ok ? 200 : 500, 'text/html; charset=utf-8', PAGE(act.title,
       '<h1>' + esc(act.title) + '</h1><div class="bar">' +
       '<span class="' + (ok ? 'ok' : 'bad') + '">exit ' + r.code + '</span>' +
-      '<span>' + r.ms + ' ms</span><a href="/run">← 所有 action</a>' +
-      runForm(act.id, '再跑一次') + '</div>' +
+      '<span>' + r.ms + ' ms</span><a href="' + base + '">← 所有 action</a>' +
+      runForm(base, act.id, '再跑一次') + '</div>' +
       '<pre>' + esc(r.output || '(沒有輸出)') + '</pre>'));
   }
   return send(ok ? 200 : 500, 'text/plain; charset=utf-8',

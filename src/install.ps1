@@ -154,37 +154,24 @@ if (-not (Test-Path (Join-Path $Dir 'Caddyfile'))) {
 # 位置從 manifest 拿（已經是 Windows 寫法的路徑）。純 edge 的機器沒有 node 這一段，
 # 就整段跳過。
 $contentRoot = $null
-$publicDir   = $null
 if ($manifest -and $manifest.node) {
     $contentRoot = $manifest.node.content_root
-    $publicDir   = $manifest.node.public_dir
 }
 if ($contentRoot) {
     Say ''
     Say '=== 內容目錄 ==='
-    New-Item -ItemType Directory -Force -Path $contentRoot, $publicDir | Out-Null
-
-    # /pub/ 是唯一的例外：pubro 不出目錄列表，沒有 index.html 就是 404。
-    # 所以給一個起始頁 —— 但那是使用者的門面，已經有就不覆蓋。
-    $pubIndex = Join-Path $publicDir 'index.html'
-    if (Test-Path $pubIndex) {
-        Say ('  ' + $pubIndex + ' 已存在，保留不覆蓋')
-    } else {
-        # 樣板是 UTF-8 沒有 BOM，一定要明講編碼：PS 5.1 的 Get-Content 沒有
-        # -Encoding 就用系統 ANSI 讀（這幾台是 cp950），中文會被 Big5 解成假字，
-        # emoji 更直接變成 ?。寫出去照樣是合法的 UTF-8，所以事後看不出是哪裡壞的。
-        # 用 ReadAllText 跟下面的 WriteAllText 對齊，不靠任何預設值。
-        $txt = [IO.File]::ReadAllText((Join-Path $repo 'templates\www\public\index.html'), [Text.UTF8Encoding]::new($false))
-        $txt = $txt -replace '__MACHINE__', $Machine
-        [IO.File]::WriteAllText($pubIndex, $txt, [Text.UTF8Encoding]::new($false))
-        Say ('  ' + $pubIndex)
-    }
+    New-Item -ItemType Directory -Force -Path $contentRoot | Out-Null
 
     # 內容根目錄給一個起始頁。**它是使用者的，不是產品的。**
     #
     # 空目錄的 / 會是 Caddy 那個灰灰的檔案列表，對剛裝好的人來說沒有任何線索
     # 說明 /_ 在哪。所以給一頁短的，講清楚「這個檔是你的、可以刪」，
     # 並且指向控制面板。已存在就不覆蓋 —— 使用者改過的東西不能動。
+    #
+    # 樣板是 UTF-8 沒有 BOM，一定要明講編碼：PS 5.1 的 Get-Content 沒有
+    # -Encoding 就用系統 ANSI 讀（這幾台是 cp950），中文會被 Big5 解成假字，
+    # emoji 更直接變成 ?。寫出去照樣是合法的 UTF-8，所以事後看不出是哪裡壞的。
+    # 用 ReadAllText 跟下面的 WriteAllText 對齊，不靠任何預設值。
     $index = Join-Path $contentRoot 'index.html'
     if (Test-Path $index) {
         Say ('  ' + $index + ' 已存在，保留不覆蓋')
@@ -194,7 +181,6 @@ if ($contentRoot) {
         [IO.File]::WriteAllText($index, $txt, [Text.UTF8Encoding]::new($false))
         Say ('  ' + $index + '   （起始頁，可自由取代或刪除）')
     }
-
     # 掛載點只要目錄不在就是 404，而且是安靜的 404。裝的時候講一聲，
     # 比之後對著空白頁面查半天好 —— 尤其是機器沒有 D: 槽這種情況。
     Say ''
@@ -454,7 +440,7 @@ if (-not $SkipSkill) {
 }
 
 # ---------------------------------------------------------------- 自我測試
-# 分角色測。edge 沒有 / 和 /pub/（那是 node 的路徑），也沒有把 /run 掛在 Caddy
+# 分角色測。edge 沒有 / 和 /_/（那是 node 的路徑），也沒有把 /_/run 掛在 Caddy
 # 底下 —— 它的 actiond 只聽 127.0.0.1:9001。拿 node 那組去測 edge 會得到三個
 # 失敗，看起來像裝壞了，其實是測錯東西。
 Say ''
@@ -469,7 +455,7 @@ try {
 }
 
 if ($manifest.node) {
-    foreach ($u in @('/', '/run', '/pub/')) {
+    foreach ($u in @('/', '/_', '/_/run')) {
         try {
             $r = Invoke-WebRequest "http://127.0.0.1$u" -UseBasicParsing -TimeoutSec 5
             Say ('  {0,-8} HTTP {1}' -f $u, $r.StatusCode)
@@ -495,11 +481,10 @@ if ($isEdge) {
         Say '    node src\caddyctl.mjs edge set --name <label> --ip <位址[:埠]>     轉給另一台 node'
         Say '    node src\caddyctl.mjs edge set --name <label> --hold               先佔著，之後再指派'
         Say ''
-        Say '  前兩種可以要密碼。不加就是公開的，任何人都看得到：'
+        Say '  密碼保護的是 /_/ 底下那台機器本身；不給密碼就是內容公開、/_/* 關閉：'
         Say '    --password <密碼>             帳號自動用 <label>'
         Say '    --password <帳號>:<密碼>      要自己指定帳號就加冒號'
         Say '    --password-hash [帳號:]<雜湊> 已經有 bcrypt 雜湊就用這個'
-        Say '    --public <路徑>               這些路徑免密碼，可重複，預設 /pub/*'
         Say ''
         Say '  然後套用：'
         Say "    node src\caddyctl.mjs reload"

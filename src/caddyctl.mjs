@@ -49,7 +49,7 @@ function die(msg) {
   process.exit(1);
 }
 
-// 支援重複出現的旗標（--public、--password、--password-hash）
+// 支援重複出現的旗標（--password、--password-hash）
 function flags(args) {
   const out = { _: [] };
   for (let i = 0; i < args.length; i++) {
@@ -83,8 +83,7 @@ const SPEC = {
   'reload':      ['dir'],
   'node init':   [...MUTATING, 'drive', 'port', 'listen', 'machine', 'static', 'home', 'no-home'],
   'edge init':   [...MUTATING, 'token', 'machine'],
-  'edge set':    [...MUTATING, ...CRED, 'name', 'ip', 'content', 'hold', 'message',
-                  'public', 'no-public', 'allow-anonymous'],
+  'edge set':    [...MUTATING, ...CRED, 'name', 'ip', 'content', 'hold', 'message'],
   'edge remove': [...MUTATING, 'name'],
   'auth set':    [...MUTATING, ...CRED, 'name', 'path'],
   'auth list':   ['dir', 'name'],
@@ -183,7 +182,6 @@ function writeText(p, text) {
 function winPaths(L, isStatic) {
   return {
     content_root: win(L.content_root),
-    public_dir: win(L.public_dir),
     actions_mount: isStatic ? null : L.actions_mount,
     mounts: isStatic
       ? {}
@@ -251,7 +249,7 @@ function rewriteGlobal(dir, state, token) {
 // 頁面裡每一行都包在 {{if fileExists}} 裡，由 Caddy 在瀏覽時判斷，所以在這台
 // 裝了新工具不必重跑這裡 —— 只有「產品的清單本身變長了」才需要重新產生。
 function writeConfigIndex(dir, state, node) {
-  const p = join(dir, 'conf', '_configs.html');
+  const p = join(dir, 'conf', 'configs.html');
   if (!node.home) {
     if (existsSync(p)) rmSync(p);
     return;
@@ -274,10 +272,10 @@ function writeConfigIndex(dir, state, node) {
 // 這一次」，之後所有變更都該能用 caddyctl 完成。放這裡，git pull 之後
 // node init --reload 就更新到了。
 //
-// 一律覆蓋：它是產品的檔案。要改樣式就改 repo 裡的 templates\www\_md.html。
+// 一律覆蓋：它是產品的檔案。要改樣式就改 repo 裡的 templates\www\md.html。
 function writeMdTemplate(dir) {
-  writeText(join(dir, 'conf', '_md.html'),
-            readFileSync(join(REPO, 'templates', 'www', '_md.html'), 'utf8'));
+  writeText(join(dir, 'conf', 'md.html'),
+            readFileSync(join(REPO, 'templates', 'www', 'md.html'), 'utf8'));
 }
 
 function writeSkeleton(dir) {
@@ -451,7 +449,7 @@ async function cmdNodeInit(f) {
   writeText(join(sitesDir(dir), '_node.caddy'), renderNodeSite(node));
   writeConfigIndex(dir, state, node);
   writeMdTemplate(dir);
-  writeText(join(dir, 'conf', '_panel.html'), renderPanel(state.machine, node));
+  writeText(join(dir, 'conf', 'panel.html'), renderPanel(state.machine, node));
   rewriteGlobal(dir, state);
   saveState(dir, state);
 
@@ -472,7 +470,7 @@ async function cmdNodeInit(f) {
   const watched = isStatic ? [L.content_root] : [L.content_root, ...Object.values(L.mounts)];
   const missing = watched.filter((p) => !existsSync(win(p)));
   if (missing.length) {
-    console.log('\n這些目錄還不存在（install.ps1 會建內容根目錄與 public，其餘要自己建）：');
+    console.log('\n這些目錄還不存在（install.ps1 會建內容根目錄，其餘要自己建）：');
     for (const m of missing) console.log('  ' + win(m));
   }
   await after(dir, state, f);
@@ -507,18 +505,17 @@ function edgeAddHelp() {
   console.log('      這台自己服務靜態內容。不給 --content 就用 '
     + win(edgeContentDefault(NODE_DEFAULTS.drive, '<label>')));
   console.log('  caddyctl edge set --name <label> --ip <位址[:埠]>');
-  console.log('      轉給另一台 node（WebDAV、/pub、.md 渲染、/run 都在那一側）');
+  console.log('      轉給另一台 node（公開網站、WebDAV、.md 渲染都在那一側）');
   console.log('  caddyctl edge set --name <label> --hold');
   console.log('      先佔著，之後再指派主機（回 503，但憑證照樣簽發與續期）');
-  console.log('\n前兩種可以要密碼 —— 不加就是公開的，任何人都看得到：');
+  console.log('\n前兩種可以要密碼：');
   console.log('  --password <密碼>                 帳號自動用 <label>');
   console.log('  --password <帳號>:<密碼>          要自己指定帳號就加冒號');
   console.log('  --password-hash [帳號:]<雜湊>     已經有 bcrypt 雜湊就用這個');
   console.log('  （可重複，一組帳號一個旗標）');
-  console.log('  --public <路徑>                   這些路徑免密碼，可重複，預設 /pub/*');
-  console.log('  --no-public                       連 /pub/* 都要密碼');
-  console.log('\n--ip 沒給帳號會被擋下來（node 有可寫入的 WebDAV 和可執行動作的 /run）。');
-  console.log('真的要公開就再加 --allow-anonymous。靜態站沒給帳號則直接放行。');
+  console.log('\n密碼保護的是 /_/ 底下那台機器本身（可寫入的 WebDAV、/_/run）。');
+  console.log('不給密碼就是「內容公開」—— 那個網域的 /_/* 會整段關閉，不會裸奔。');
+  console.log('要把 / 底下某一條路徑關起來，用 caddyctl auth set --path。');
   console.log('\n完整說明：caddyctl --help');
 }
 
@@ -566,28 +563,13 @@ async function cmdEdgeSet(f) {
   if (f.ip) {
     const target = String(f.ip).includes(':') ? String(f.ip) : String(f.ip) + ':80';
     refuseSelfProxy(target, label, defaultContent);
-    // /pub 是產品裡唯一不需要密碼的路徑，node 一定有，所以預設就放行。
-    // 不想放行就 --no-public。
-    const pub = f['no-public'] ? [] : (many(f.public).length ? many(f.public).map(String) : ['/pub/*']);
-    const users = usersFrom(f, dir, label);
-    // 沒有密碼的 --ip 幾乎不可能是故意的，所以要明講才放行。
+    // 沒有密碼不再是錯誤，因為它已經不危險了：那台機器本身在 /_/ 底下，
+    // 而沒有密碼的網域**不路由 /_/***（見 renderEdgeSite）。所以「沒給密碼」
+    // 的意思很單純 —— 那台的公開網站要公開。講一聲就好，不必攔。
     //
-    // 靜態站沒密碼只是「網頁被看光」，而且很多站本來就要公開。但 --ip 是把
-    // 一整台 node 開到網際網路上，而 node 有**可寫入的 WebDAV** 和**可以執行
-    // 主機動作的 /run** —— 沒有密碼就是任何人都能寫你的檔案、觸發你的 action。
-    // 這不是假設：這套系統自己就這樣裸奔過一次。
-    if (!Object.keys(users).length && !f['allow-anonymous']) {
-      die('--ip 會把 ' + target + ' 那台 node 開到網際網路上，但你沒給任何帳號。\n\n'
-        + '  node 上有可寫入的 WebDAV，和可以執行主機動作的 /run。\n'
-        + '  沒有密碼等於任何人都能寫入你的檔案、觸發你的 action。\n\n'
-        + '  加密碼：\n'
-        + '    caddyctl edge set --name ' + label + ' --ip ' + String(f.ip)
-        + ' --password <密碼>\n\n'
-        + '  真的要公開（例如那台後面只有公開內容）：\n'
-        + '    再加上 --allow-anonymous\n\n'
-        + '  只想開放部分路徑就用 --public <路徑> —— 預設已經放行 /pub/*（唯讀公開區）。');
-    }
-    def = { mode: 'proxy', target, public_paths: pub, users };
+    // 這就是 --allow-anonymous 消失的原因：它存在是為了讓使用者承認
+    // 「我知道我把可寫入的 WebDAV 開到網路上了」，而現在那件事不會發生。
+    def = { mode: 'proxy', target, users: usersFrom(f, dir, label) };
   } else if (f.hold) {
     def = { mode: 'hold' };
     if (f.message) def.message = String(f.message);
@@ -617,7 +599,6 @@ async function cmdEdgeSet(f) {
     content: def.content || null,
     apps_dir: def.mode === 'serve' ? win(CADDY_DIR + '/apps/' + label) : null,
     auth: Object.keys(def.users || {}),
-    public_paths: def.public_paths || [],
   };
   rewriteGlobal(dir, state);
   saveState(dir, state);
@@ -902,12 +883,15 @@ const isInstalled = () => existsSync(join(win(CADDY_DIR), 'caddy.exe'));
 
 // 套用設定要打哪個網址。
 //
-// node 的站台設定裡有一條 /run 轉給 actiond，所以打 80 就行。
-// **純 edge 沒有那條** —— 它服務的是一個個對外網域，把 /run 掛上去等於誰都能
-// 觸發主機動作（Host header 可以偽造）。所以 edge 要直接打 actiond 自己的埠，
-// 而它只聽 loopback。
+// node 的站台設定裡有一條 /_/run 轉給 actiond，所以打 80 就行。
+// **純 edge 沒有那條** —— 它服務的是一個個對外網域，而 /_/* 只在那個網域
+// 有密碼時才路由。所以 edge 要直接打 actiond 自己的埠，而它只聽 loopback。
+//
+// 兩個入口的路徑不同：經過 Caddy 是 /_/run（node 的掛載點），直接打埠是
+// /run（actiond 自己的根）。actiond 兩種都認得（見 server.mjs 的 BASE_RE），
+// 但這裡還是要給對，因為 Caddy 那一側只有 /_/run 這條 handle。
 function reloadUrl(state) {
-  if (state.roles.includes('node')) return 'http://127.0.0.1/run/caddy-reload';
+  if (state.roles.includes('node')) return 'http://127.0.0.1/_/run/caddy-reload';
   const port = state.node?.actiond_port || NODE_DEFAULTS.actiond_port;
   return 'http://127.0.0.1:' + port + '/run/caddy-reload';
 }
@@ -973,10 +957,6 @@ const USAGE = `caddyctl —— 一次設定一台機器，或一個網域
                                 同上，但直接給 caddy hash-password 算好的
                                 bcrypt 雜湊（$2a$…，60 個字元）。餵明文會被擋。
                                 只切第一個冒號，所以密碼後半含冒號沒問題
-      --public <路徑>           不需要密碼的路徑，可重複，預設 /pub/*
-      --no-public               連 /pub/* 都要密碼
-      --allow-anonymous         --ip 沒給帳號時要明講。node 有可寫入的 WebDAV
-                                和可執行主機動作的 /run，不會讓你不小心裸奔
 
   node src/caddyctl.mjs edge remove --name <label>
 

@@ -43,7 +43,6 @@ export function nodeLayout(drive) {
   const d = String(drive).replace(/[:\\/]+$/, '').toUpperCase() + ':';
   return {
     content_root: d + '/www',
-    public_dir: d + '/www/public',
     mounts: { p: d + '/projects', w: d + '/workspaces' },
     actions_mount: 'a',
   };
@@ -216,10 +215,24 @@ function authLines(users, secret, inRoute) {
 // 一個網域一個檔，而且**自給自足** —— 裡面不參照任何其他網域的東西。
 // 所以加一台、移除一台都只動一個檔。
 //
-// d = { mode, target, content, public_paths, users: {name: bcrypt}, message }
+// 授權只有一條規則：**保護 /_/*，其餘公開。**
+//
+// 以前這裡有四個特例（/pub/* 永遠免密碼、/run* 永遠不對匿名開放、
+// --public 可以再開洞、--allow-anonymous 又是另一個開關），四個湊起來沒有人
+// 記得住哪個蓋過哪個。現在 node 端已經把「機器」全部收進 /_/ 底下
+// （見 renderNodeSite），所以這裡只要守住那一個前綴就夠了。
+//
+// **沒有密碼的網域不路由 /_/*。** 那不是使用者的政策選項，是產品的不變量：
+// /_/www/ /_/p/ /_/w/ 是可寫入的 WebDAV，/_/a/ 可以編輯 action 的腳本本身，
+// /_/run 會執行它們。沒有密碼就把這些開到網際網路上，等於交出那台機器。
+// 這不是假設：這套系統自己就這樣裸奔過一次。
+//
+// 於是「沒給密碼」的意思回歸單純：**我的內容要公開**。它不再需要解釋為什麼
+// 不包含 /run，也不再需要一個叫 --allow-anonymous 的旗標去承認這件事。
 export function renderEdgeSite(label, d) {
   const host = fqdn(label);
   const wrap = (lines) => host + ' {\n' + indent(lines.join('\n')) + '\n}\n';
+  const conf = q(win(CADDY_DIR + '/conf'));
   const body = [];
   body.push('import sitelog ' + q(win(LOG_DIR + '/' + label + '_access.log')));
   body.push('');
@@ -232,77 +245,70 @@ export function renderEdgeSite(label, d) {
     return wrap(body);
   }
 
-  // 個別路徑的密碼（caddyctl auth）。hold 沒有內容可以保護，所以不給。
+  // 個別路徑的密碼（caddyctl auth）。這是「把 / 底下某一條路徑關起來」的辦法。
   body.push('# 個別路徑的密碼：caddyctl auth set / list / remove');
   body.push(authImport(label));
   body.push('');
 
-  if (d.mode === 'serve') {
-    // 這台自己服務的站也支援 drop-in 的 app 路由，跟 node 一致。
-    // 一個 hostname 一個資料夾，因為 edge 上會有好幾個站。
-    body.push('# 這個站的 app 路由：一個 app 一個檔，丟進去 reload 就生效');
-    body.push('import ' + q(CADDY_DIR + '/apps/' + label + '/*.caddy'));
-    body.push('');
-    if (d.content) body.push('import webroot ' + q(win(d.content)));
-    // 整站的密碼。某條路徑要另外一組密碼是 caddyctl auth 的事 ——
-    // 那條規則放在 conf/auth/<label>/，上面已經 import 進來了。
-    const auth = authLines(d.users, d.remember, false);
-    if (auth.length) {
-      body.push('');
-      body.push(...auth);
-    }
-    return wrap(body);
-  }
+  const hasPassword = Boolean(d.users && Object.keys(d.users).length);
 
   if (d.mode === 'proxy') {
-    // node 的 actiond 沒有 token —— install.ps1 只設 ACTION_HOST=127.0.0.1，
-    // 而 server.mjs 的 token 檢查是「TOKEN 是空的就跳過」。它唯一的保護是綁在
-    // loopback，但 reverse_proxy 送過去的請求本來就來自 loopback。
-    // 所以沒有密碼的站，/run 等於把「執行主機動作」開給全世界。
-    //
-    // 這條跟 /pub/* 是對稱的產品不變量，不是使用者的政策選項：
-    // /pub/* 永遠免密碼，/run* 永遠不對匿名開放。--allow-anonymous 的意思是
-    // 「內容我要公開」，不是「讓網際網路在我機器上跑指令」。
-    if (!d.users || !Object.keys(d.users).length) {
-      body.push('# 這個站沒有密碼，所以不轉 /run —— 那是執行主機動作的入口');
-      body.push('handle /run* {');
+    // 後面是一台 node。密碼保護的是**那台機器**，也就是 /_/* ——
+    // 可寫入的 WebDAV、可編輯 action 的 /_/a/、會執行它們的 /_/run。
+    // 內容（/）一律公開，跟那台自己在區網上的樣子一致。
+    body.push('# /_/ 底下是那台機器本身');
+    if (hasPassword) {
+      body.push('handle /_* {');
+      body.push('\troute {');
+      for (const l of authLines(d.users, d.remember, true)) body.push('\t\t' + l);
+      body.push('\t\treverse_proxy ' + d.target);
+      body.push('\t}');
+      body.push('}');
+    } else {
+      // 沒有密碼就整段不路由。這不是使用者的政策選項，是產品的不變量 ——
+      // 沒有密碼還把可寫入的 WebDAV 和 /_/run 開到網際網路上，等於交出那台機器。
+      // 這不是假設：這套系統自己就這樣裸奔過一次。
+      body.push('# 這個網域沒有密碼，所以整段關閉');
+      body.push('handle /_* {');
       body.push('\trespond "not exposed" 404');
       body.push('}');
     }
-    for (const p of d.public_paths || []) {
-      // 免認證的路徑。後端負責把它限制成唯讀、且只服務公開目錄。
-      body.push('handle ' + p + ' {');
-      body.push('\treverse_proxy ' + d.target);
-      body.push('}');
-    }
-    // proxy 模式整段包在 route 裡：這是 Set-Cookie 不會漏到 401 上的保證。
-    body.push('handle {');
-    body.push('	route {');
-    for (const l of authLines(d.users, d.remember, true)) body.push('		' + l);
+    body.push('');
     // 不要動 Host header —— WebDAV 的 MOVE/COPY 會拿 Destination 的 host 去比對
     // 後端看到的 r.Host，改了就 502。Caddy 預設就是原樣傳。
-    body.push('		reverse_proxy ' + d.target);
-    body.push('	}');
+    body.push('handle {');
+    body.push('\treverse_proxy ' + d.target);
     body.push('}');
+    return wrap(body);
+  }
+
+  if (d.mode === 'serve') {
+    // edge 自己服務的靜態站。**這裡沒有「機器」那一層** —— 它不是 node，
+    // 沒有 /_/www/ /_/p/ /_/run 那些東西。所以 /_ 只是保留字，一律 404。
+    //
+    // 於是密碼在這個模式下的意思跟 proxy 不同：沒有機器可以保護，它保護的
+    // 就是內容本身。那是唯一說得通的解釋，也保住了「我要一個只有我看得到的
+    // 靜態站」這個正當需求。
+    body.push('# 這個站的 app 路由：一個 app 一個檔，丟進去 reload 就生效');
+    body.push('import ' + q(CADDY_DIR + '/apps/' + label + '/*.caddy'));
+    body.push('');
+    body.push('# /_ 是保留字：edge 自己服務的站沒有「機器」那一層');
+    body.push('handle /_* {');
+    body.push('\trespond "not exposed" 404');
+    body.push('}');
+    body.push('');
+    if (hasPassword) {
+      body.push('# 這個站要密碼（保護的是內容 —— 這裡沒有機器可以保護）');
+      body.push(...authLines(d.users, d.remember, false));
+      body.push('');
+    }
+    if (d.content) body.push('import webroot ' + q(win(d.content)) + ' ' + conf);
     return wrap(body);
   }
 
   throw new Error('不認識的 mode "' + d.mode + '"');
 }
 
-// ---------------------------------------------------------------- 控制面板
-//
-// **控制面板不住在內容根目錄裡。**
-//
-// 原本它是 D:\www\index.html —— 也就是說「這台的首頁」跟「使用者自己的首頁」
-// 是同一個檔，兩者只能活一個。使用者放自己的 index.html 就等於把面板刪掉，
-// 而且看起來像產品壞了，不像自己覆蓋了什麼。（實際踩過兩次。）
-//
-// 現在面板產生到 conf\_panel.html，掛在 /_。內容根目錄從此完全是使用者的：
-// 放什麼都行，不放就是目錄列表。
-//
-// 順帶一個好處：面板改成從設定算出來，就不會說謊了 —— static 的機器沒有
-// /p/ /w/ /a/，沒設家目錄的機器沒有 /c/，這些以前在靜態樣板裡是寫死的。
 const CSS = [
   ':root{--bg:#fff;--fg:#1f2328;--mut:#59636e;--line:#d1d9e0;--card:#f6f8fa;--link:#0969da}',
   '@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#3d444d;--card:#151b23;--link:#4493f8}}',
@@ -326,34 +332,27 @@ const card = (href, ico, name, desc) =>
   '<span class="ico">' + ico + '</span>' +
   '<span><span class="n">' + name + '</span><br><span class="d">' + desc + '</span></span></a>';
 
+
 export function renderPanel(machine, n) {
   const L = nodeLayout(n.drive);
-  const cards = [];
+  const pub = [];
+  const priv = [];
 
-  // 內容根目錄排第一 —— 那是使用者的地方，面板只是客人。
-  cards.push(card('/', '🏠', '/', win(L.content_root) + ' —— 你的內容根目錄' +
-    (n.static ? '（唯讀）' : '，可用 WebDAV 讀寫')));
+  // 公開區在前，機器區在後 —— 面板本身就該把那條界線畫出來。
+  pub.push(card('/', '🌐', '/', win(L.content_root) + ' —— 你的公開網站，唯讀'));
 
+  priv.push(card('/_/run', '⚡', '/_/run', '執行主機上的動作'));
+  if (n.home) priv.push(card('/_/c/', '⚙️', '/_/c/', '這台裝了哪些工具，以及它們的設定檔'));
   if (!n.static) {
+    priv.push(card('/_/www/', '📄', '/_/www/', win(L.content_root) + ' —— 同一個目錄，這裡可以寫'));
     const desc = { p: 'projects', w: 'workspaces' };
     for (const [prefix, root] of Object.entries(L.mounts)) {
-      cards.push(card('/' + prefix + '/', prefix === 'p' ? '📦' : '🗂️', '/' + prefix + '/',
-        (desc[prefix] || prefix) + ' — ' + win(root) + '，瀏覽 / .md 渲染 / WebDAV 讀寫'));
+      priv.push(card('/_/' + prefix + '/', prefix === 'p' ? '📦' : '🗂️', '/_/' + prefix + '/',
+        (desc[prefix] || prefix) + ' — ' + win(root)));
     }
-  }
-
-  cards.push(card('/run', '⚡', '/run', '執行主機上的動作'));
-
-  if (!n.static) {
-    cards.push(card('/' + L.actions_mount + '/', '📝', '/' + L.actions_mount + '/',
+    priv.push(card('/_/' + L.actions_mount + '/', '📝', '/_/' + L.actions_mount + '/',
       win(CADDY_DIR + '/actions') + ' —— 編輯 action 本身'));
   }
-
-  if (n.home) {
-    cards.push(card('/_/c/', '⚙️', '/_/c/', '這台裝了哪些工具，以及它們的設定檔'));
-  }
-
-  cards.push(card('/pub/', '🌐', '/pub/', '對外公開唯讀，<b>不需要密碼</b>'));
 
   return [
     '<!doctype html>',
@@ -363,20 +362,24 @@ export function renderPanel(machine, n) {
     '<title>' + machine + '</title>',
     '<style>',
     ...CSS,
+    'h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:2em 0 .8em}',
     '</style>',
     '<main>',
     '  <h1>' + machine + '</h1>',
-    '  <div class="sub">瀏覽 · Markdown 渲染 · WebDAV 讀寫，同一組網址</div>',
+    '  <div class="sub">瀏覽 · Markdown 渲染 · WebDAV 讀寫</div>',
     '',
-    ...cards,
+    '  <h2>公開 —— 不需要密碼</h2>',
+    ...pub.map((c) => c),
+    '',
+    '  <h2>要密碼</h2>',
+    ...priv.map((c) => c),
     '',
     '  <footer>',
-    '    這一頁是 caddyctl 產生的（<code>' + win(CADDY_DIR + '/conf/_panel.html') + '</code>），',
+    '    這一頁是 caddyctl 產生的（<code>' + win(CADDY_DIR + '/conf/panel.html') + '</code>），',
     '    每次 <code>node init</code> 會重寫 —— 不要手動編輯。<br>',
+    '    規則只有一條：<code>/_/</code> 底下是這台機器，其餘是你的公開網站。<br>',
     '    <code>' + win(L.content_root) + '</code> 是你的：放自己的 <code>index.html</code>',
     '    不會影響這一頁。<br>',
-    '    每個網址實際對應到哪個目錄，看 <code>' + win(CADDY_DIR + '/conf/manifest.json') + '</code>',
-    '    的 <code>url_map</code>。<br>',
     '    看 .md 原始碼：網址後面加 <code>?raw=1</code>',
     '  </footer>',
     '</main>',
@@ -384,21 +387,6 @@ export function renderPanel(machine, n) {
   ].join('\n');
 }
 
-// ---------------------------------------------------------------- /c/ 設定檔
-//
-// 把散在家目錄各處的設定檔集中成一個網址，並且**改名**成看得懂的名字 ——
-// 三個工具的設定檔都叫 settings.json，擺在一起是分不出來的。
-//
-// 清單就是這張表，沒有別的機制：一行 = 一個會出現在 /c/ 的檔案。
-//
-// **這張表決定了什麼東西會被公開。** 沒有排除邏輯，也刻意不做 ——
-// 要一個檔案不出現在 /c/，就是不要把它寫進這裡。所以加行之前先想一下：
-// 這個檔裡有沒有金鑰？.npmrc、.aws/credentials、.ssh/id_*、
-// .claude/.credentials.json 這類純憑證檔就是為此不在表上。
-// （openclaw.json 本身可能含金鑰，它在表上是使用者明確要求的取捨。）
-//
-// 路徑一律是**家目錄底下的相對路徑**，用正斜線。猜錯的路徑不會壞掉，
-// 只會安靜地不顯示 —— 所以表可以寫寬一點，涵蓋還沒裝的工具。
 export const CONFIG_FILES = [
   // 顯示名                相對於家目錄的真實路徑                        說明
   ['openclaw.json',      '.openclaw/openclaw.json',                    'OpenClaw'],
@@ -473,6 +461,23 @@ export function renderConfigIndex(machine) {
 }
 
 // ---------------------------------------------------------------- node 的站
+//
+// **一條規則：`/_/` 底下是機器，其餘是你的公開網站。**
+//
+// 原本這裡有四個各自獨立的規定：/pub/* 永遠免密碼、/run* 永遠不對匿名開放、
+// --public / --no-public 可以再開洞、--allow-anonymous 又是另一個開關。
+// 四個特例湊出來的東西，沒有人記得住哪個蓋過哪個。
+//
+// 現在只有一條：**edge 只保護 /_/***，其餘全部公開。於是
+//
+//     node = static + /_/ 底下多幾個掛載點
+//
+// 兩種機器的 / 行為一模一樣（唯讀公開的 webroot），差別只在 /_/ 底下有沒有
+// /_/www/ /_/p/ /_/w/ /_/a/。/pub/ 和 pubro 因此整個消失 —— 整個內容根目錄
+// 就是公開區，不必再挖一個子目錄當洞。
+//
+// 內容根目錄的可寫視圖搬到 /_/www/：同一個目錄兩個網址，公開的那個唯讀，
+// 要寫就得過 /_/ 的密碼。這是「/ 公開」和「WebDAV 不能裸奔」唯一能並存的形狀。
 export function renderNodeSite(n) {
   const L = nodeLayout(n.drive);
   const body = [];
@@ -485,72 +490,41 @@ export function renderNodeSite(n) {
   body.push(authImport(NODE_SITE));
   body.push('');
 
-  // 執行 action。**區網上就打得到，這是刻意的。**
-  //
-  // 「手機也能按」是這個產品的功能之一，而手機的路徑是
-  //     手機 →（HTTPS + 密碼）→ edge → HTTP → 這台的 /run
-  // 從這台看，那個請求的來源是 edge 的區網位址，不是 loopback。所以把 /run
-  // 限制成只收本機，等於把那個功能拿掉。
-  //
-  // 那區網上的其他機器呢？—— 信任邊界刻意畫在 edge 上，不是畫在每一台上：
-  //
-  //   * edge 到這裡是**明文 HTTP**（node 是 auto_https off，TLS 是 edge 的事）。
-  //     接受這件事，就等於已經宣告區網內部不設防 —— 再為 /run 單獨設一道
-  //     來源限制，只是局部地嚴格，不會改變整體的安全等級。
-  //   * 也不用 token：明文通道上的 bearer token 側錄得到、重放得了，
-  //     比來源限制更弱，還多一個必須長期存在的祕密。
-  //
-  // 真正不可信的是網際網路那一側，所以擋在那裡：**沒有密碼的 edge 站台不會把
-  // /run 轉過來**（見 renderEdgeSite）。要遠端管理就給那個網域一組密碼。
-  // 控制面板。產生出來的頁面，掛在 /_ —— 不占用內容根目錄的 index.html。
-  //
-  // 為什麼是底線：產品的頁面每多一個就從使用者的命名空間拿走一個名字
-  // （/panel 一旦被佔用，D:\www\panel\ 就再也看不到了）。全部收進 /_ 底下，
-  // 就只佔用一個名字，而且以後再加任何產品頁面都不必再佔用。
-  //
-  // 底線在這個專案裡本來就是「這不是使用者的東西」的記號 —— _node.caddy、
-  // _panel.html、_configs.html、_md.html 全是這個意思，所以 /_ 是延續慣例，
-  // 不是新規則。
-  //
-  // 掛載點（/p/ /w/ /a/ /pub/）沒辦法比照辦理，它們必須是路徑：WebDAV 的
-  // PROPFIND / MOVE 的 Destination、目錄列表的相對連結、Markdown 渲染的
-  // httpInclude，全部是路徑導向的。
-  body.push('# 控制面板（caddyctl 產生的 conf\\_panel.html）');
+  // Markdown 樣板所在的目錄。放 conf\ 而不是內容根目錄：它是產品的檔案。
+  const tpl = q(win(CADDY_DIR + '/conf'));
+  const conf = q(win(CADDY_DIR + '/conf'));
+
+  // ---- /_ 控制面板 ----
+  body.push('# 控制面板（caddyctl 產生的 conf\\panel.html）');
   body.push('redir /_/ /_ 308');
   body.push('handle /_ {');
-  body.push('\troot * ' + q(win(CADDY_DIR + '/conf')));
-  body.push('\trewrite * /_panel.html');
+  body.push('\troot * ' + conf);
+  body.push('\trewrite * /panel.html');
   body.push('\tfile_server');
   body.push('}');
   body.push('');
 
+  // ---- /_/run 執行動作 ----
+  //
+  // 搬進 /_/ 之後就不必再有「沒密碼的站不轉 /run」那條特例了 ——
+  // 整個 /_/* 本來就只在有密碼時才路由（見 renderEdgeSite）。
   body.push('# 執行 action（由 action daemon 派送）');
-  body.push('handle /run {');
+  body.push('handle /_/run {');
   body.push('\treverse_proxy 127.0.0.1:' + n.actiond_port);
   body.push('}');
-  body.push('handle /run/* {');
+  body.push('handle /_/run/* {');
   body.push('\treverse_proxy 127.0.0.1:' + n.actiond_port);
   body.push('}');
   body.push('');
 
-  // /c/ —— 家目錄裡的設定檔，改名之後集中在一個網址。
-  //
-  // 每個檔案一個 handle，而且是**確切路徑**（不是 /c/*）。這一點是安全性的關鍵：
-  // handle 的路徑比對就是唯一的閘門，所以同一個目錄裡的鄰居（.claude 底下的
-  // .credentials.json 之類）從 /c/ 完全打不到 —— 只有 CONFIG_FILES 明列的那幾個
-  // 路徑存在，其餘一律落到後面的 handle 去。（實測驗過。）
-  //
-  // 索引頁是 caddyctl 產生的 conf/_configs.html，裡面每一行都包在 fileExists 裡，
-  // 由 Caddy 在**每次瀏覽時**判斷，所以裝了新工具不必重新產生設定。
+  // ---- /_/c/ 家目錄裡的設定檔 ----
   if (n.home) {
     const home = posix(n.home);
-    body.push('# 家目錄裡的設定檔（清單見 render.mjs 的 CONFIG_FILES）');
+    body.push('# 家目錄裡的設定檔（清單見 CONFIG_FILES）');
     body.push('redir /_/c /_/c/ 308');
     body.push('handle /_/c/ {');
-    body.push('\troot * ' + q(win(CADDY_DIR + '/conf')));
-    body.push('\trewrite * /_configs.html');
-    // templates 的 root 跟 file_server 的 root 是分開的兩件事：樣板檔在 conf\，
-    // 但 fileExists 要以家目錄為基準去判斷那些設定檔在不在。
+    body.push('\troot * ' + conf);
+    body.push('\trewrite * /configs.html');
     body.push('\ttemplates {');
     body.push('\t\troot ' + q(win(home)));
     body.push('\t}');
@@ -565,58 +539,41 @@ export function renderNodeSite(n) {
     body.push('');
   }
 
+  // ---- /_/www/ /_/p/ /_/w/ /_/a/ 可寫入的掛載點（static 沒有）----
+  const mounts = n.static ? [] : [
+    ['www', L.content_root],
+    ...Object.entries(L.mounts),
+    [L.actions_mount, CADDY_DIR + '/actions'],
+  ];
+  if (mounts.length) {
+    body.push('# 少了尾斜線的入口導正');
+    for (const [prefix] of mounts) body.push('redir /_/' + prefix + ' /_/' + prefix + '/ 308');
+    body.push('');
+    for (const [prefix, root] of mounts) {
+      body.push('handle /_/' + prefix + '/* {');
+      body.push('\timport fsdav ' + q(win(root)) + ' /_/' + prefix + ' ' + tpl);
+      body.push('}');
+      body.push('');
+    }
+  }
+
   body.push('# 各 app 的路由：一個 app 一個檔，丟進去 reload 就生效');
   body.push('import ' + q(CADDY_DIR + '/apps/*.caddy'));
   body.push('');
 
-  body.push('# 唯一不需要密碼的路徑 —— 放進去的東西等於對整個網際網路公開');
-  body.push('handle /pub/* {');
-  body.push('\timport pubro ' + q(win(L.public_dir)) + ' /pub');
+  // ---- / 你的公開網站（static 和 node 完全一樣）----
+  body.push('# 站台根目錄 —— 你的公開網站，唯讀。要寫入走 /_/www/');
+  body.push('handle {');
+  body.push('\timport webroot ' + q(win(L.content_root)) + ' ' + tpl);
   body.push('}');
-  body.push('');
-
-  // static 的機器只服務檔案：沒有掛載點，根目錄也是唯讀的 webroot 而不是
-  // 可讀寫的 fsdav。/run 兩種都保留 —— 少了它就沒有遠端管理通道，
-  // 也就變不回全功能了。
-  const mounts = n.static
-    ? []
-    : [...Object.entries(L.mounts), [L.actions_mount, CADDY_DIR + '/actions']];
-
-  body.push('# 少了尾斜線的入口導正');
-  for (const [prefix] of mounts) body.push('redir /' + prefix + ' /' + prefix + '/ 308');
-  body.push('redir /pub /pub/ 308');
-  body.push('');
-
-  // Markdown 樣板（_md.html）所在的目錄。
-  //
-  // 放 conf\ 而不是內容根目錄：它是產品的檔案，不是使用者的內容。擺在 D:\www
-  // 會出現在目錄列表裡、會被使用者誤刪、而且會落進 install.ps1 那條
-  // 「已存在就保留不覆蓋」的規則 —— 從此永遠不更新。
-  // 內容根目錄現在完全屬於使用者，這是那個決定的一部分。
-  const tpl = q(win(CADDY_DIR + '/conf'));
-
-  for (const [prefix, root] of mounts) {
-    body.push('handle /' + prefix + '/* {');
-    body.push('\timport fsdav ' + q(win(root)) + ' /' + prefix + ' ' + tpl);
-    body.push('}');
-    body.push('');
-  }
-
-  if (n.static) {
-    body.push('# 站台根目錄（唯讀 —— 這台是 static，沒有 WebDAV）');
-    body.push('handle {');
-    body.push('\timport webroot ' + q(win(L.content_root)));
-    body.push('}');
-  } else {
-    body.push('# 站台根目錄（前綴傳空字串就是掛在根目錄）');
-    body.push('handle {');
-    body.push('\timport fsdav ' + q(win(L.content_root)) + ' "" ' + tpl);
-    body.push('}');
-  }
 
   return GENERATED + '\n' + n.listen + ' {\n' + indent(body.join('\n')) + '\n}\n';
 }
 
+// ---------------------------------------------------------------- node 的 url_map
+// 網址 -> 實體位置。新的 app 不能撞到這裡面任何一個前綴。
+// 必須跟 renderNodeSite 產生的設定一致 —— 改了那邊就要改這邊，
+// 說謊的 manifest 比沒有 manifest 更糟。
 // ---------------------------------------------------------------- 外掛
 // 角色決定建置。安裝程式讀 manifest 的 plugins，不必自己維護一份清單。
 export function pluginsFor(roles) {
@@ -626,22 +583,24 @@ export function pluginsFor(roles) {
   return p;
 }
 
-// ---------------------------------------------------------------- node 的 url_map
-// 網址 -> 實體位置。新的 app 不能撞到這裡面任何一個前綴。
-// 必須跟 renderNodeSite 產生的設定一致 —— 改了那邊就要改這邊，
-// 說謊的 manifest 比沒有 manifest 更糟。
+
 export function urlMap(n) {
   const L = nodeLayout(n.drive);
   // 值一律是「乾淨的路徑」—— install.ps1 會對 X:\ 開頭的值做 Test-Path，
-  // 在後面附註「(read-only)」會讓它誤報成目錄不存在。唯讀與否看 node.static。
-  const m = { '/': win(L.content_root) };
-  if (!n.static) {
-    for (const [prefix, root] of Object.entries(L.mounts)) m['/' + prefix + '/'] = win(root);
-    m['/' + L.actions_mount + '/'] = win(CADDY_DIR + '/actions');
-  }
-  m['/pub/'] = win(L.public_dir);
-  m['/_'] = 'control panel (' + win(CADDY_DIR + '/conf/_panel.html') + ')';
+  // 在後面附註「(read-only)」會讓它誤報成目錄不存在。
+  //
+  // 順序就是「公開的在前，要密碼的在後」—— 讀這份 manifest 的人（AI、安裝
+  // 程式）第一眼就該看出這條界線。
+  const m = {
+    '/': win(L.content_root),
+    '/_': 'control panel (' + win(CADDY_DIR + '/conf/panel.html') + ')',
+  };
   if (n.home) m['/_/c/'] = 'home config files (' + win(n.home) + ')';
-  m['/run'] = 'action daemon (reverse_proxy 127.0.0.1:' + n.actiond_port + ')';
+  m['/_/run'] = 'action daemon (reverse_proxy 127.0.0.1:' + n.actiond_port + ')';
+  if (!n.static) {
+    m['/_/www/'] = win(L.content_root);
+    for (const [prefix, root] of Object.entries(L.mounts)) m['/_/' + prefix + '/'] = win(root);
+    m['/_/' + L.actions_mount + '/'] = win(CADDY_DIR + '/actions');
+  }
   return m;
 }

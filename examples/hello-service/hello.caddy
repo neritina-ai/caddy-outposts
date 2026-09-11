@@ -1,6 +1,6 @@
 # hello-service 的路由 —— 複製到 C:\Caddy\apps\hello.caddy
 #
-# 改完要套用：POST /run/caddy-reload
+# 改完要套用：POST /_/run/caddy-reload
 # 刪掉這個檔再 reload 就移除。
 
 # 少了尾斜線一定要導正。

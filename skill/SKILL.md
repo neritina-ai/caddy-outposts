@@ -14,12 +14,17 @@ description: 管理這台機器上的 Caddy 網站 —— 掛新的 app、發佈
 
 | 網址 | 目錄 | 是什麼 |
 |---|---|---|
-| `/` | `<槽>\www` | 站台根目錄 |
-| `/pub/` | `<槽>\www\public` | **公開，不需要密碼** |
-| `/p/` | `<槽>\projects` | |
-| `/w/` | `<槽>\workspaces` | |
-| `/a/` | `C:\Caddy\actions` | 用 WebDAV 編輯 action |
-| `/run` | action daemon | 控制面板 |
+| `/` | `<槽>\www` | **你的公開網站，唯讀，不需要密碼** |
+| `/_` | — | 控制面板 |
+| `/_/www/` | `<槽>\www` | 同一個目錄，這裡可以寫 |
+| `/_/p/` | `<槽>\projects` | |
+| `/_/w/` | `<槽>\workspaces` | |
+| `/_/a/` | `C:\Caddy\actions` | 用 WebDAV 編輯 action |
+| `/_/c/` | 家目錄裡的設定檔 | 這台裝了哪些工具 |
+| `/_/run` | action daemon | 執行動作 |
+
+**規則只有一條：`/_/` 底下是這台機器本身，其餘是使用者的公開網站。**
+edge 只保護 `/_/*`，所以放進 `<槽>\www` 的東西等於對整個網際網路公開。
 
 **這台是哪個槽、還有哪些網址被佔用了，看這個檔：**
 
@@ -28,7 +33,8 @@ Get-Content C:\Caddy\conf\manifest.json | ConvertFrom-Json
 ```
 
 裡面的 `node.url_map` 就是**已經被佔用的網址對照表**，
-`node.content_root` 是內容根目錄的絕對路徑。新的 app 不要撞到那些前綴。
+`node.content_root` 是內容根目錄的絕對路徑。新的 app 不要撞到那些前綴 ——
+產品的東西全在 `/_` 底下，所以只要不叫 `_` 就不會撞到。
 不要猜，也不要靠翻設定檔反推。
 
 ## 目錄
@@ -41,8 +47,7 @@ Get-Content C:\Caddy\conf\manifest.json | ConvertFrom-Json
       actions\*.ps1           可觸發的動作            ← 你在這裡新增
       logs\
 
-    <槽>:\www\                站台根目錄，對應網址 /   ← 看 manifest 的 content_root
-      public\                 對應 /pub —— **公開，不需要密碼**
+    <槽>:\www\                使用者的公開網站，對應網址 /   ← 看 manifest 的 content_root
 
 > **這台如果是 edge**（`roles` 含 `"edge"`）：它服務的是好幾個網域，所以 app 路由
 > 是一個網域一個資料夾 —— `C:\Caddy\apps\<label>\*.caddy`，實際路徑看 manifest 裡
@@ -67,7 +72,7 @@ handle_path /myapp/* {
 **2. 套用：**
 
 ```
-POST http://127.0.0.1/run/caddy-reload
+POST http://127.0.0.1/_/run/caddy-reload
 ```
 
 （有 caddyctl 可用的話，`node <skill-caddy>\src\caddyctl.mjs reload` 一樣，
@@ -102,13 +107,14 @@ app 不必自己重做一遍，也不該讓人繞過。
 
 `.md` 檔在瀏覽器裡會自動渲染成 HTML；加 `?raw=1` 看原始碼。
 
-**公開、不需要密碼的**：放進內容根目錄底下的 `public\`,網址是 `/pub/...`。
-那個目錄**一定**是 `<content_root>\public`,不會被設定成別的地方。
+**內容根目錄整個是公開的。** edge 只保護 `/_/*`，所以放進 `<槽>\www` 的任何東西
+都不需要密碼就看得到 —— 那就是使用者的公開網站。
 
-> ⚠ **放進 `public` 等於對整個網際網路公開。** 那是整個站台唯一不需要密碼的路徑，
-> 存在的理由是有些客戶端不會帶認證憑證（例如聊天軟體內嵌的 webview）。
-> 只放確定可以公開的東西。那條路徑是唯讀的，而且不出目錄列表 ——
-> 一定要有 `index.html`。
+> ⚠ **不要把祕密放進內容根目錄。** 要放不公開的東西，放 `<槽>\projects` 或
+> `<槽>\workspaces`（網址在 `/_/p/`、`/_/w/`，在密碼後面）。
+> 要把公開網站底下某一條路徑關起來，用 `caddyctl auth set --path`。
+
+從網路上寫入內容根目錄要走 `/_/www/`（`/` 是唯讀的）。
 
 ---
 
@@ -161,7 +167,7 @@ Restart-Service myservice
 exit 0
 ```
 
-丟進去**立即生效，不用 reload**。`GET /run` 會列出全部。
+丟進去**立即生效，不用 reload**。`GET /_/run` 會列出全部。
 
 ### 四條規則
 
@@ -215,10 +221,10 @@ if ($p -and $p.ProcessName -eq 'node') { <# 真的在跑 #> }
 | 新增／修改／刪除 `C:\Caddy\apps\*.caddy` | **要** |
 
 ```
-POST /run/caddy-validate    只檢查語法，不套用
-POST /run/caddy-reload      先 validate，通過才套用（優雅重載，不斷線）
-POST /run/caddy-rollback    還原上一份可用的設定
-POST /run/caddy-status      版本、服務狀態、是否有未套用的變更
+POST /_/run/caddy-validate    只檢查語法，不套用
+POST /_/run/caddy-reload      先 validate，通過才套用（優雅重載，不斷線）
+POST /_/run/caddy-rollback    還原上一份可用的設定
+POST /_/run/caddy-status      版本、服務狀態、是否有未套用的變更
 ```
 
 **用 caddyctl 的話更簡單 —— 改設定的指令加 `--reload` 就順便套用了：**
@@ -234,15 +240,15 @@ node <skill-caddy>\src\caddyctl.mjs auth set --path /reports/* --password police
 node <skill-caddy>\src\caddyctl.mjs reload
 ```
 
-> `/run` 的網址會因為角色而不同：node 是 `http://127.0.0.1/run/...`（站台設定裡
-> 有一條 `/run` 轉給 actiond），**edge 沒有那條**，要直接打
+> `/run` 的網址會因為角色而不同：node 是 `http://127.0.0.1/_/run/...`（站台設定裡
+> 有一條 `/_/run` 轉給 actiond），**edge 沒有那條**，要直接打
 > `http://127.0.0.1:9001/run/...`。`caddyctl reload` 從 manifest 判斷，
 > 所以不用自己記 —— 也不會因為記錯而以為 reload 壞掉。
 
 **你負責的是這一台。** 別台上的設定請使用者去那台處理，或交給那台上的 AI ——
 需要別台配合的事（例如把一個網域指到這台）不是你的工作。
 
-> 技術上 `/run` 在區網內是打得到的（那讓「手機經過 edge 按 action」成立），
+> 技術上 `/_/run` 在區網內是打得到的（那讓「手機經過 edge 按 action」成立），
 > 但那不是給你跨機器操作用的。改別台的設定而不讓那台上的人知道，
 > 是製造事故的好方法。
 
@@ -291,15 +297,15 @@ edge 那台是另一回事（`edge set` 是取代，每個網域要重打完整�
 * **不要在 reverse proxy 上改 `Host` header。** WebDAV 的 `MOVE`／`COPY` 會拿
   `Destination` 的 host 去比對後端看到的 `r.Host`，改了就 502 ——
   等於把「重新命名檔案」關掉。
-* **不要把祕密放進 `public\`。**
+* **不要把祕密放進內容根目錄 —— 那整個是公開的。**
 
 ---
 
 ## 除錯
 
 ```
-POST /run/caddy-status                    先看這個
-POST /run/caddy-validate                  設定語法有沒有問題
+POST /_/run/caddy-status                    先看這個
+POST /_/run/caddy-validate                  設定語法有沒有問題
 C:\Caddy\logs\access.log                  誰打了什麼
 C:\Caddy\logs\actiond.log                 action daemon 的問題
 C:\Caddy\logs\caddy.log                   Caddy 服務本身的問題

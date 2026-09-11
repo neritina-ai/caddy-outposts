@@ -27,13 +27,9 @@ Copy-Item -Recurse .\examples\calendar   D:\www\calendar
 
 **不用 reload Caddy。** 內容檔案是即時的，只有 `apps\*.caddy` 改了才要 reload。
 
-放進 `public\` 的話，網址變成 `/pub/...`，而且**不需要密碼就能看**：
-
-```powershell
-Copy-Item -Recurse .\examples\calculator D:\www\public\calculator
-```
-
-→ `/pub/calculator/`，任何人都打得開。要放進去之前先確定那是可以公開的東西。
+> ⚠ **`D:\www` 底下的東西全部是公開的**，不需要密碼就看得到 —— 那就是
+> 使用者的公開網站。要放不公開的東西，放 `D:\projects` 或 `D:\workspaces`
+> （網址在 `/_/p/`、`/_/w/`，在密碼後面）。
 
 這兩個都可以直接用 WebDAV 編輯 —— 用手機的檔案 app 掛上站台網址，
 打開 `calculator/index.html` 改一行存檔，重新整理就生效了。
