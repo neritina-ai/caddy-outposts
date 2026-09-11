@@ -71,7 +71,7 @@ handle_path /myapp/* {
 **2. 套用：**
 
 ```
-POST http://127.0.0.1/_/run/caddy-reload
+POST http://127.0.0.1:9001/run/caddy-reload
 ```
 
 （有 caddyctl 可用的話，`node <skill-caddy>\src\caddyctl.mjs reload` 一樣，
@@ -238,10 +238,11 @@ node <skill-caddy>\src\caddyctl.mjs auth set --path /reports/* --password police
 node <skill-caddy>\src\caddyctl.mjs reload
 ```
 
-> `/run` 的網址會因為角色而不同：node 是 `http://127.0.0.1/_/run/...`（站台設定裡
-> 有一條 `/_/run` 轉給 actiond），**edge 沒有那條**，要直接打
-> `http://127.0.0.1:9001/run/...`。`caddyctl reload` 從 manifest 判斷，
-> 所以不用自己記 —— 也不會因為記錯而以為 reload 壞掉。
+> **叫 action 一律直接打 actiond 的埠**（`http://127.0.0.1:9001/run/...`），
+> 不要繞過 Caddy。經過 Caddy 的話，能不能通取決於現在跑著的那份設定 ——
+> 而需要 reload 的時候，那份設定往往正是有問題的那一份。
+>
+> 從瀏覽器按按鈕是另一回事，那是 `/_/run`（要密碼）。
 
 **你負責的是這一台。** 別台上的設定請使用者去那台處理，或交給那台上的 AI ——
 需要別台配合的事（例如把一個網域指到這台）不是你的工作。

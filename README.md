@@ -327,7 +327,7 @@ handle_path /myapp/* {
 ```
 
 ```powershell
-curl.exe -X POST http://127.0.0.1/_/run/caddy-reload
+curl.exe -X POST http://127.0.0.1:9001/run/caddy-reload
 ```
 
 路徑不要叫 `_`，其餘隨便取 —— 產品的東西全在 `/_` 底下。
@@ -514,13 +514,14 @@ sc.exe delete actiond
 ## 出問題時
 
 ```powershell
-curl.exe -X POST http://127.0.0.1/_/run/caddy-status     # 先看這個
-curl.exe -X POST http://127.0.0.1/_/run/caddy-validate   # 設定語法
-curl.exe -X POST http://127.0.0.1/_/run/caddy-rollback   # 還原上一份可用的設定
+curl.exe -X POST http://127.0.0.1:9001/run/caddy-status     # 先看這個
+curl.exe -X POST http://127.0.0.1:9001/run/caddy-validate   # 設定語法
+curl.exe -X POST http://127.0.0.1:9001/run/caddy-rollback   # 還原上一份可用的設定
 ```
 
-edge 上沒有 `/_/run` 這條路由（它服務的是對外網域），要直接打 actiond 的埠：
-`http://127.0.0.1:9001/run/caddy-status`。
+**一律打 actiond 自己的埠，不要繞過 Caddy。** 需要排錯的時候，現在跑著的那份
+設定往往正是有問題的那一份 —— 繞過去就不會被它影響。`9001` 只聽 loopback，
+所以這是本機專用的入口；從瀏覽器按按鈕走的是 `/_/run`（要密碼）。
 
 log 在 `C:\Caddy\logs\`。
 

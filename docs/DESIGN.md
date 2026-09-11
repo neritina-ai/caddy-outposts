@@ -230,7 +230,7 @@ manifest 有一條額外的硬性規定：**內容必須是純 ASCII**，caddyct
     第一次（人，管理員）        caddyctl <角色> init  +  install.ps1
 
     之後（那台上的人或 AI）     寫檔案（apps\、內容目錄、conf\auth\）
-                                 └─ POST http://127.0.0.1/_/run/caddy-reload
+                                 └─ POST http://127.0.0.1:9001/run/caddy-reload
 
 `actiond` **刻意不放在 Caddy 後面**，自己聽一個獨立的埠。如果它藏在 Caddy 後面，
 一旦 Caddy 設定被改壞或服務沒起來，救援管道就跟著不見了。
@@ -308,12 +308,16 @@ admin API 的 `POST /load` 吃的是請求 body 裡的完整設定，等於任�
 ### 只有 reload 有 caddyctl 指令，另外三個 action 故意維持 curl
 
 `caddyctl reload`（以及每個改設定的指令都吃的 `--reload`）存在，是因為 reload 在
-**每一次**改設定之後都要做 —— 它在主要流程上，而且那個網址的埠會因為角色而不同
-（node 打 80、edge 打 9001），是最容易打錯的地方。
+**每一次**改設定之後都要做 —— 它在主要流程上。
+
+它**直接打 actiond 的埠**，不繞過 Caddy：reload 不能依賴「正要被換掉的那份
+設定」。經過 Caddy 的話，這個網址能不能通取決於現在跑著的設定有沒有那條路由，
+而需要 reload 的時候那份設定往往正是有問題的那一份 —— 升級改了路由、或路由被
+改壞的時候，最需要它的那一刻反而叫不動。
 
 `caddy-status` / `caddy-validate` / `caddy-rollback` **刻意不給指令**，維持
-`curl.exe -X POST http://…/_/run/caddy-status` 的寫法。它們有一樣的埠陷阱，所以這
-不是漏掉的：**多打幾個字是刻意的摩擦**。這三個不是日常動作，寫起來就該感覺得出來
+`curl.exe -X POST http://127.0.0.1:9001/run/caddy-status` 的寫法。
+這不是漏掉的：**多打幾個字是刻意的摩擦**。這三個不是日常動作，寫起來就該感覺得出來
 不是日常動作 —— `caddy-rollback` 尤其，它會丟掉現在這份設定，不該跟 `edge set`
 一樣順手。
 

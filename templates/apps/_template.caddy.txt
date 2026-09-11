@@ -7,7 +7,7 @@
 #   }
 #
 # 存檔之後執行：
-#   curl -X POST http://127.0.0.1/_/run/caddy-reload
+#   curl -X POST http://127.0.0.1:9001/run/caddy-reload
 # 或在瀏覽器打開 /_/run，按「驗證並重載 Caddy」。
 #
 # 網址就是 http://<這台>/myapp（外網則是 edge 上對應的那個網域）。

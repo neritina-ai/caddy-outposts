@@ -880,15 +880,19 @@ const isInstalled = () => existsSync(join(win(CADDY_DIR), 'caddy.exe'));
 
 // 套用設定要打哪個網址。
 //
-// node 的站台設定裡有一條 /_/run 轉給 actiond，所以打 80 就行。
-// **純 edge 沒有那條** —— 它服務的是一個個對外網域，而 /_/* 只在那個網域
-// 有密碼時才路由。所以 edge 要直接打 actiond 自己的埠，而它只聽 loopback。
+// **一律直接打 actiond 自己的埠，不要繞過 Caddy。**
 //
-// 兩個入口的路徑不同：經過 Caddy 是 /_/run（node 的掛載點），直接打埠是
-// /run（actiond 自己的根）。actiond 兩種都認得（見 server.mjs 的 BASE_RE），
-// 但這裡還是要給對，因為 Caddy 那一側只有 /_/run 這條 handle。
+// 繞過去的理由是 reload 不能依賴「正要被換掉的那份設定」。經過 Caddy 的話，
+// 這個網址能不能通取決於**現在跑著的**設定有沒有那條路由 —— 而需要 reload 的
+// 時候，那份設定往往正是有問題的那一份：
+//
+//   * 升級：新版把 /run 改成 /_/run，但跑著的還是舊設定，打新網址直接 404。
+//     設定寫好了卻套用不了，而且錯誤訊息看起來像 actiond 掛了。（實測踩到。）
+//   * 壞掉的設定：路由被改壞的時候，最需要 reload 的那一刻反而叫不動它。
+//
+// actiond 只聽 loopback，而 caddyctl 本來就在那台機器上跑，所以直接打埠沒有
+// 任何損失，而且 edge / node 走同一條路 —— 少一個要記的差異。
 function reloadUrl(state) {
-  if (state.roles.includes('node')) return 'http://127.0.0.1/_/run/caddy-reload';
   const port = state.node?.actiond_port || NODE_DEFAULTS.actiond_port;
   return 'http://127.0.0.1:' + port + '/run/caddy-reload';
 }
