@@ -280,6 +280,7 @@ node src\caddyctl.mjs reload
 | `/_/c/` | 這台裝了哪些工具（家目錄裡的設定檔） | 要 |
 | `/_/run` | action 面板 | 要 |
 | `/_/run/<名稱>` | 執行某個 action | 要 |
+| `/_/run/cc-open` | 挑一個專案（或建一個新的），開一個帶 Remote Control 的 Claude Code | 要 |
 | `/_/run/cc-rc` | 幫這台上的 Claude Code session 開 Remote Control | 要 |
 | `/_/p/`、`/_/w/` | `<槽>\projects`、`<槽>\workspaces` | 要 |
 | `/_/a/` | actions 資料夾 | 要 |
@@ -345,6 +346,25 @@ curl.exe -X POST http://127.0.0.1:9001/run/caddy-reload
 腳本開頭加 `# @page`，它就不是一個動作，而是**一頁網頁**：method、query
 string 和表單 body 交給腳本，stdout 原樣當 HTML 送出去。一個檔案一個網址，
 不用開埠、不用寫 `.caddy` 片段、不用 reload。`actions\cc-rc.mjs` 是現成的例子。
+
+### 在手機上開一個新的 Claude Code session
+
+打開 `/_/run/cc-open`：挑一個 `<槽>\projects` 底下的專案，或在文字框輸入一個名字
+建一個新的，按下去這台機器就在那個目錄開一個 Claude Code，**帶著 Remote Control**
+——手機上馬上看得到，直接開始講話。
+
+- 建新專案時可以勾「同時建立空的 `genesis/` 子目錄」
+- 輸入的名字剛好已經存在的話，它會先問你是不是要連到那個現有的專案，不會自己決定
+- session 的名字就是專案名稱；同一個專案已經有 session 的話，新的那個會加編號
+  （`myproj-2`）
+- 電腦那端的視窗開在你系統設定的那個終端機裡，而且是**最小化**的：正在用電腦的人
+  不會被打擾，回到電腦前從工作列點開就能接手（標題 `✳ 名字`）
+- 這一頁只負責把它開起來，不會替你送出第一句話 —— 要說什麼在手機上打
+
+> 第一次在某個目錄開 Claude Code，它本來會先問「是否信任這個資料夾」，而那種
+> session 沒有輸入框、也不會有 Remote Control，手機上救不回來。這一頁會在啟動前
+> 先替那個目錄記下信任，所以那個問題不會出現。萬一哪天還是出現了，頁面會直說
+> session 沒起來，要有人在那台電腦前按一次 Yes。
 
 ### 忘記開 Remote Control 的時候
 
