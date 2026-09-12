@@ -1,4 +1,4 @@
-# skill-caddy
+# caddy-outposts
 
 把幾台 Windows 機器變成一個自架的小型網站叢集：對外有 HTTPS 網域，對內可以用
 WebDAV 直接編輯檔案、用手機按一下就在主機上執行動作。
@@ -27,12 +27,12 @@ WebDAV 直接編輯檔案、用手機按一下就在主機上執行動作。
 
 ```powershell
 # 1. 普通 PowerShell
-git clone <這個 repo> C:\skill-caddy
-cd C:\skill-caddy
+git clone <這個 repo> C:\caddy-outposts
+cd C:\caddy-outposts
 node src\caddyctl.mjs node init
 
 # 2. 系統管理員 PowerShell
-cd C:\skill-caddy
+cd C:\caddy-outposts
 .\src\install.ps1
 ```
 
@@ -40,12 +40,12 @@ cd C:\skill-caddy
 
 ```powershell
 # 1. 普通 PowerShell
-git clone <這個 repo> C:\skill-caddy
-cd C:\skill-caddy
+git clone <這個 repo> C:\caddy-outposts
+cd C:\caddy-outposts
 node src\caddyctl.mjs edge init --token <duckdns 的 token>
 
 # 2. 系統管理員 PowerShell
-cd C:\skill-caddy
+cd C:\caddy-outposts
 .\src\install.ps1
 
 # 3. 加一個網域，指到那台 node
@@ -67,7 +67,7 @@ node src\caddyctl.mjs edge set --name myfiles --ip <node 的 IP> --password alic
 - [網址對照](#網址對照)
 - [日常操作](#日常操作)
 - [用 WebDAV 編輯檔案](#用-webdav-編輯檔案)
-- [更新 skill-caddy](#更新-skill-caddy)
+- [更新 caddy-outposts](#更新-caddy-outposts)
 - [移除（或重裝）](#移除或重裝)
 - [出問題時](#出問題時)
 - [指令速查](#指令速查)
@@ -79,8 +79,8 @@ node src\caddyctl.mjs edge set --name myfiles --ip <node 的 IP> --password alic
 ### 步驟 1 — 寫設定（普通 PowerShell）
 
 ```powershell
-git clone <這個 repo> C:\skill-caddy
-cd C:\skill-caddy
+git clone <這個 repo> C:\caddy-outposts
+cd C:\caddy-outposts
 node src\caddyctl.mjs node init
 ```
 
@@ -91,7 +91,7 @@ node src\caddyctl.mjs node init
 ### 步驟 2 — 裝服務（**系統管理員** PowerShell）
 
 ```powershell
-cd C:\skill-caddy
+cd C:\caddy-outposts
 .\src\install.ps1
 ```
 
@@ -122,8 +122,8 @@ node src\caddyctl.mjs edge set --name myfiles --ip <node 的 IP> --password alic
 ### 步驟 1 — 寫設定（普通 PowerShell）
 
 ```powershell
-git clone <這個 repo> C:\skill-caddy
-cd C:\skill-caddy
+git clone <這個 repo> C:\caddy-outposts
+cd C:\caddy-outposts
 node src\caddyctl.mjs edge init --token <duckdns 的 token>
 ```
 
@@ -132,7 +132,7 @@ token 只輸入這一次，之後 caddyctl 會自己讀回來。
 ### 步驟 2 — 裝服務（**系統管理員** PowerShell）
 
 ```powershell
-cd C:\skill-caddy
+cd C:\caddy-outposts
 .\src\install.ps1
 ```
 
@@ -436,7 +436,7 @@ https://myfiles.duckdns.org/_/w/
 
 ---
 
-## 更新 skill-caddy
+## 更新 caddy-outposts
 
 `C:\Caddy\` 底下的東西是 caddyctl **產生出來的快照**。`git pull` 之後那些檔案不會
 自己跟著變，**也不會有任何錯誤訊息** —— 舊版的行為就這樣安靜地繼續跑。

@@ -1,5 +1,5 @@
 // ===========================================================================
-//  hello-service  ——  skill-caddy 的「app」範例
+//  hello-service  ——  caddy-outposts 的「app」範例
 //
 //  一個沒有任何相依套件的小服務，用來示範怎麼把跑在本機某個埠上的東西
 //  掛到站台的某個路徑下面。
@@ -144,7 +144,7 @@ a{color:var(--accent)}
 </style>
 <main>
   <h1>hello-service</h1>
-  <div class="sub">skill-caddy 的 app 範例 —— 一個跑在本機埠上、被 Caddy 掛到子路徑的服務</div>
+  <div class="sub">caddy-outposts 的 app 範例 —— 一個跑在本機埠上、被 Caddy 掛到子路徑的服務</div>
 
   <div class="big">
     <div class="n" id="hits">–</div>

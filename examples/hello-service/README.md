@@ -17,7 +17,7 @@ actions\hello-stop.ps1  -> C:\Caddy\actions\
 
 ## 安裝
 
-在裝好 skill-caddy 的 node 機器上。`C:\Caddy` 是固定的；內容根目錄看
+在裝好 caddy-outposts 的 node 機器上。`C:\Caddy` 是固定的；內容根目錄看
 `C:\Caddy\conf\manifest.json` 的 `node.content_root`（預設 `D:\www`）。
 
 ```powershell
@@ -88,7 +88,7 @@ TLS、認證、log 都在那裡做。app 自己不要重做一遍，也不要讓
 這是範例，不是產品。真的要長期跑的東西，該考慮的還有：
 
 * **開機自動啟動。** 現在要手動按 `hello-start`。要自動的話，用 `nssm` 註冊成
-  Windows 服務（skill-caddy 自己就是這樣裝 `caddy` 和 `actiond` 的），
+  Windows 服務（caddy-outposts 自己就是這樣裝 `caddy` 和 `actiond` 的），
   或做一個開機時觸發的排程工作。
 * **掛掉自動重啟。** 沒有。註冊成服務就有了。
 * **多人同時寫。** `hits.json` 是整份覆寫的，量大就會掉資料。

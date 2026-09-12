@@ -5,7 +5,7 @@ description: 管理這台機器上的 Caddy 網站 —— 掛新的 app、發佈
 
 # caddy
 
-這台機器用 skill-caddy 管理網站。這份技能告訴你**怎麼改**、以及**哪些東西不能碰**。
+這台機器用 caddy-outposts 管理網站。這份技能告訴你**怎麼改**、以及**哪些東西不能碰**。
 
 ## 版面
 
@@ -74,7 +74,7 @@ handle_path /myapp/* {
 POST http://127.0.0.1:9001/run/caddy-reload
 ```
 
-（有 caddyctl 可用的話，`node <skill-caddy>\src\caddyctl.mjs reload` 一樣，
+（有 caddyctl 可用的話，`node <caddy-outposts>\src\caddyctl.mjs reload` 一樣，
 而且不必記這台是哪個埠。）
 
 網址就是 `http://<這台>/myapp`。刪掉那個檔再 reload 就移除。
@@ -122,9 +122,9 @@ app 不必自己重做一遍，也不該讓人繞過。
 
 **用工具，不要自己寫 `.caddy` 檔**：
 
-    node D:\projects\skill-caddy\src\caddyctl.mjs auth set --path /reports/* --password police:123
-    node D:\projects\skill-caddy\src\caddyctl.mjs auth list
-    node D:\projects\skill-caddy\src\caddyctl.mjs auth remove --path /reports/*
+    node D:\projects\caddy-outposts\src\caddyctl.mjs auth set --path /reports/* --password police:123
+    node D:\projects\caddy-outposts\src\caddyctl.mjs auth list
+    node D:\projects\caddy-outposts\src\caddyctl.mjs auth remove --path /reports/*
 
 （caddyctl 的位置看 manifest 沒有寫 —— 它在使用者放 repo 的地方，
 問使用者，或找 `caddyctl.mjs`。）
@@ -134,7 +134,7 @@ app 不必自己重做一遍，也不該讓人繞過。
 
 改完要套用 —— **加 `--reload` 就順便做掉了**：
 
-    node D:\projects\skill-caddy\src\caddyctl.mjs auth set --path /reports/* --password police:123 --reload
+    node D:\projects\caddy-outposts\src\caddyctl.mjs auth set --path /reports/* --password police:123 --reload
 
 **這台是 edge 的話要加 `--name <網域 label>`**，因為 edge 上有好幾個站。
 node 只有一個站，可以省。
@@ -271,14 +271,14 @@ POST /_/run/caddy-status      版本、服務狀態、是否有未套用的變�
 **用 caddyctl 的話更簡單 —— 改設定的指令加 `--reload` 就順便套用了：**
 
 ```powershell
-node <skill-caddy>\src\caddyctl.mjs auth set --path /reports/* --password police:123 --reload
+node <caddy-outposts>\src\caddyctl.mjs auth set --path /reports/* --password police:123 --reload
 ```
 
 改好幾個地方就只在**最後一個**指令加 `--reload`。不確定還要改幾次就都不加，
 最後單獨跑：
 
 ```powershell
-node <skill-caddy>\src\caddyctl.mjs reload
+node <caddy-outposts>\src\caddyctl.mjs reload
 ```
 
 > **叫 action 一律直接打 actiond 的埠**（`http://127.0.0.1:9001/run/...`），
@@ -298,13 +298,13 @@ node <skill-caddy>\src\caddyctl.mjs reload
 完全不動作 —— 而且就算檔案已經寫壞，正在跑的 Caddy 用的是記憶體裡的舊設定，
 站台不會掛掉。所以寫壞是救得回來的。
 
-### 更新 skill-caddy 之後要重跑一次
+### 更新 caddy-outposts 之後要重跑一次
 
 `C:\Caddy\conf\` 底下是**產生出來的快照**。`git pull` 拿到新版之後那些檔案不會
 自己跟著變，也不會有任何錯誤訊息 —— 舊版的行為會安靜地繼續跑。更新完就重跑：
 
 ```powershell
-node <skill-caddy>\src\caddyctl.mjs node init --reload
+node <caddy-outposts>\src\caddyctl.mjs node init --reload
 ```
 
 沒帶的旗標沿用現有設定，所以重跑是安全的。這台原本是 static 的話，記得把
@@ -319,11 +319,11 @@ edge 那台是另一回事（`edge set` 是取代，每個網域要重打完整�
 
 * **不要編輯 `C:\Caddy\Caddyfile` 或 `C:\Caddy\conf\`。** 前者是產品的骨架，
   後者是 `caddyctl` 產生的 —— 手動改了會在下次執行時被蓋掉。
-  要改的話用 skill-caddy 的 CLI（`node init` 可以重跑，沒寫的旗標沿用現有設定）：
+  要改的話用 caddy-outposts 的 CLI（`node init` 可以重跑，沒寫的旗標沿用現有設定）：
 
   ```powershell
-  node <skill-caddy>\src\caddyctl.mjs node init --port 9500
-  node <skill-caddy>\src\caddyctl.mjs reload
+  node <caddy-outposts>\src\caddyctl.mjs node init --port 9500
+  node <caddy-outposts>\src\caddyctl.mjs reload
   ```
 
   node 能調的只有 `--drive`（整組內容目錄換一個槽）和 `--port`（actiond 的埠）——

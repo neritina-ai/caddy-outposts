@@ -1,4 +1,4 @@
-# skill-caddy — 設計
+# caddy-outposts — 設計
 
 把一組 Windows 機器變成一個小型的自架網站叢集：一台對外的 **edge**（reverse proxy，
 負責 DNS、憑證、認證），數台 **node**（提供內容與 app）。每台裝完之後，在那台工作的 AI
@@ -767,7 +767,7 @@ HTTP 請求就卡到 timeout 為止（實測：一個啟動服務的 action 卡�
 
 ## 9. repo 結構
 
-    skill-caddy\
+    caddy-outposts\
       README.md               安裝步驟
       docs\DESIGN.md          這一份
       skill\SKILL.md          安裝到 ~\.claude\skills\caddy\
