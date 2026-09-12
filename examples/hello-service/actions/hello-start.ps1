@@ -25,10 +25,12 @@ $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {
     "找不到 node。"
     ""
-    "actiond 是以服務身分執行的，看不到裝在使用者層級（%APPDATA%）的 Node。"
+    "這支 action 是以服務身分執行的 —— 沒有人登入的時候 actiond 就是這樣跑的，"
+    "而服務身分看不到裝在使用者層級（%APPDATA%）的 Node。"
     "兩個解法："
     "  1. 把 Node 裝成 all users（PATH 會寫進 HKLM），或"
-    "  2. 改走使用者身分橋接 —— 見 actions\_userbridge.ps1"
+    "  2. 在這個檔開頭加一行 # @only-when-logged-on —— 那樣沒人登入時就不會跑，"
+    "     有人登入時 actiond 會以他的身分執行，找得到他的 Node。"
     exit 1
 }
 

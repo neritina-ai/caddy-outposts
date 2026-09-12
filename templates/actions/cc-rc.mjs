@@ -2,6 +2,7 @@
 // @desc    列出這台機器上的 Claude Code session，選中的重開成帶 Remote Control 的
 // @group   claude
 // @page
+// @only-when-logged-on
 //
 // 為什麼是「殺掉再 resume」，不是「把 /rc 打進那個視窗」：
 //
@@ -13,11 +14,14 @@
 // 代價是那個行程被換掉了，所以這些東西不會回來：正在跑的那一輪、啟動時給的
 // --model / --effort / --add-dir、輸入框裡還沒送出的字。
 //
-// 為什麼每一件事都走使用者身分的橋：actiond 以 NT AUTHORITY\LocalService 執行
-// （2026-09 降權之後就不再是安裝者的帳號了），那個身分的 %USERPROFILE% 不是
-// 使用者的，claude agents --json 會回一個空陣列 —— 而空陣列看起來跟「真的沒有
-// session」一模一樣。寧可慢一點，也不要安靜地說謊。
-// 而且開視窗本來就非走它不可：服務在 session 0，那裡開的視窗使用者看不到。
+// 為什麼標 @only-when-logged-on：actiond 以 NT AUTHORITY\LocalService 執行，
+// 那個身分的 %USERPROFILE% 不是使用者的，claude agents --json 會回一個空陣列
+// —— 而空陣列看起來跟「真的沒有 session」一模一樣。與其安靜地說謊，不如讓
+// actiond 在沒人登入的時候就直接擋下來。而且開視窗本來就需要使用者的 session：
+// 服務在 session 0，那裡開的視窗使用者在桌面上看不到。
+//
+// 有人登入的時候 actiond 會把這支程式整個交給橋，所以下面的程式碼就是以使用者
+// 的身分、在他的 session 1 裡跑的 —— 不需要再自己過一次橋。
 //
 // 這支檔案有兩個模式。頁面模式（actiond 呼叫）負責畫面與動作；--collect 模式
 // 由橋接以使用者身分執行，只負責把資料撈出來印成 JSON。同一個檔案，因為那兩件事
@@ -165,18 +169,29 @@ if (collectAt >= 0) {
 const SELF   = process.env.ACTION_SELF || '/_/run/cc-rc';
 const METHOD = (process.env.ACTION_METHOD || 'GET').toUpperCase();
 
-function asUser(command) {
+// 跑一段 PowerShell。**不經過任何橋** —— 這支程式已經是以使用者的身分在跑了。
+//
+// 指令和輸出都走檔案，不走管線：PowerShell 5.1 的 stdout 在被導向時是用系統
+// OEM codepage 寫出去的（這台是 Big5），中文會在管線上壞掉。兩端都指定 UTF-8
+// 誰都不用猜。輸入檔要帶 BOM（沒有 BOM 的 UTF-8 會被當成系統 ANSI 解析），
+// 輸出檔不要帶（帶了的話 JSON.parse 會被那三個 byte 噎到）。
+function runPs(script) {
   const id   = randomUUID();
   const inf  = path.join(tmpdir(), 'cc-rc-' + id + '.ps1');
   const outf = path.join(tmpdir(), 'cc-rc-' + id + '.out');
-  // UTF-8 with BOM：PowerShell 5.1 讀沒有 BOM 的 UTF-8 會當成系統 ANSI（這台是 Big5）
-  writeFileSync(inf, '\ufeff' + command, 'utf8');
+  const wrapper =
+    "$ErrorActionPreference = 'Continue'\n" +
+    '$text = & {\n' + script + '\n} *>&1 | Out-String\n' +
+    '[IO.File]::WriteAllText(' + ps(outf) + ', $text, [Text.UTF8Encoding]::new($false))\n';
+  writeFileSync(inf, '\ufeff' + wrapper, 'utf8');
   try {
+    // windowsHide 只蓋住這個 powershell 自己的主控台。腳本裡 Start-Process 開出來
+    // 的 claude 視窗不受影響 —— 那本來就是要讓使用者看得見的東西。
     const r = spawnSync('powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '_asuser.ps1', '-In', inf, '-Out', outf],
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', inf],
       { cwd: process.cwd(), windowsHide: true, timeout: 110000 });
     let text = '';
-    try { text = readFileSync(outf, 'utf8'); } catch { /* 橋沒跑成就是空的 */ }
+    try { text = readFileSync(outf, 'utf8'); } catch { /* 沒跑成就是空的 */ }
     return { code: r.status === null ? -1 : r.status, text: text.trim() };
   } finally {
     rmSync(inf, { force: true });
@@ -184,51 +199,9 @@ function asUser(command) {
   }
 }
 
-// 交換檔放在 <caddy>\logs\：橋接那端（使用者）和這端（actiond）都寫得進去，
-// 那是現成的事實 —— _userbridge.ps1 的 user-request.out 本來就在那裡。
-// 放 os.tmpdir() 不行：actiond 的 temp 在它自己的服務 profile 底下
-// （LocalService 是 C:\Windows\ServiceProfiles\LocalService\...），
-// 使用者那端寫不進去。
-function sessionsViaBridge() {
-  const out = path.resolve(path.dirname(process.argv[1]), '..', 'logs',
-                           'cc-rc-' + randomUUID() + '.json');
-  const r = asUser('node ' + ps(process.argv[1]) + ' --collect ' + ps(out));
-  let text = '';
-  try { text = readFileSync(out, 'utf8'); } catch { /* 沒寫成就看橋回報什麼 */ }
-  rmSync(out, { force: true });
-  if (!text) return { error: r.text || '橋接沒有回應（使用者可能沒有登入）' };
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    return { error: '看不懂回來的東西：' + e.message + '\n\n' + text };
-  }
-}
-
-// 先自己問，問不到才走橋。
-//
-// 橋是有代價的，而且那個代價使用者看得見：排程工作是在**使用者的互動 session**
-// 裡開一個 PowerShell，於是桌面上會閃過一個約 0.3 秒的 console 視窗。
-//
-// 拿到空的才走橋：那正好是「這個身分看不到使用者的東西」的樣子。真的一個
-// session 都沒有的時候會白走一趟，但那一趟的答案一樣是空的 —— 慢一點、閃一下，
-// 結論不變。
-//
-// **2026-09 之後這個快路徑實際上不會再命中。** actiond 降權成 LocalService 是
-// 為了不讓 actions\ 裡的東西以管理員身分執行，代價就是它讀不到使用者的 profile，
-// 於是每次都落到橋上、每次都閃一下。判斷式留著不改 —— 它本來就是對的，只是現在
-// 永遠走同一邊；而且 -ActiondUser 指定一個看得到使用者東西的帳號時它又會命中。
-//
-// 要把不閃這件事贏回來：另外註冊一個只讀資料的 S4U 排程工作（S4U 在 session 0，
-// 沒有視窗，而且使用者沒登入也能跑）。實測 S4U 是管理員，所以它跑的腳本必須放在
-// actiond 寫不到的地方，否則等於把剛拆掉的提權管道又接回去。見 DESIGN.md。
-//
-// 開視窗那一步沒有這個選擇：服務在 session 0，那裡開的視窗使用者看不到，
-// 非走橋不可。所以送出的時候還是會閃一下，但那是一個明確的動作，不是每次開頁面。
-function sessions() {
-  const direct = collect();
-  if (direct.list && direct.list.length) return direct;
-  return sessionsViaBridge();
-}
+// actiond 會把這支程式交給橋，所以 collect() 已經是以使用者的身分問的。
+// 原本「先自己問，問不到才走橋」那兩條路的分岐就沒有意義了。
+const sessions = collect;
 
 // 工作目錄照 manifest 的掛載點縮短：D:\projects\wall-audio 顯示成 wall-audio。
 // 不要寫死磁碟機 —— 那是 caddyctl node init --drive 決定的，而且 mounts 本來就在
@@ -479,7 +452,7 @@ for (const a of picked) {
               " + $(if ($hid) { '' } else { '（視窗沒縮成，它開著）' }))");
 }
 
-const run = asUser(script.join('\n'));
+const run = runPs(script.join('\n'));
 
 // 等新的行程登記自己 —— 輪詢，不要用固定秒數。
 //
@@ -525,7 +498,7 @@ const ok = run.code === 0 && !pending.length;
 const result =
   '<h1>Remote Control</h1>' +
   '<p class="' + (ok ? 'ok' : 'bad') + '">' +
-  (run.code !== 0 ? '橋接回報 exit ' + run.code
+  (run.code !== 0 ? 'PowerShell 回報 exit ' + run.code
     : pending.length ? pending.length + ' 個等了 ' + waited + ' 秒還沒回來'
     : (picked.length - pending.length) + ' 個已經重開好了（' + waited + ' 秒），手機上應該看得到') +
   '</p>' +

@@ -179,55 +179,38 @@ exit 0
 
 3. **底線開頭的檔案不會被列成 action**，可以拿來放範本或共用函式。
 
-4. **需要「使用者身分」的指令要走橋接。** actiond 是服務，跑在 Windows session 0，
-   身分是 `NT AUTHORITY\LocalService` —— **不是管理員，也不是你**。那是刻意的：
-   `actions\` 裡的東西等於可以用 HTTP 觸發的程式碼，所以 actiond 的權限等級
-   就是那個目錄的爆炸半徑。
+4. **actiond 會自動以「登入中的使用者」身分執行你的 action。** 它自己跑在
+   Windows session 0，身分是 `NT AUTHORITY\LocalService` —— 不是管理員，也不是你。
+   但它**預設把每一支 action 都交給使用者身分的橋**，所以你的腳本實際上是以那個
+   使用者、在他的互動 session 裡跑的：工具找得到（`%APPDATA%\npm` 那些）、profile
+   是對的、**產生的檔案 owner 就是那個使用者**、寫得進他的專案目錄。
 
-   三個會咬人的後果：
+   你什麼都不用做，這是預設行為。
 
-   * 裝在使用者層級的工具找不到（`%APPDATA%` 底下的 npm 全域套件），
-     讀到的 profile 也是錯的。
-   * **它建出來的檔案 owner 是 `NT AUTHORITY\LOCAL SERVICE`，不是你。**
-   * **有些目錄它根本寫不進去。** 只從磁碟根目錄繼承到 `Authenticated Users:
-     Modify` 的地方（`C:\Caddy`、內容根目錄、workspaces）寫得進去；被明確設過
-     權限的地方寫不進去 —— `/_/p/` 指到的專案目錄常常就是這樣（實測：拒絕存取）。
+   **沒有人登入的時候**，actiond 退回自己執行（服務帳號），並在輸出上標一句
+   「某某尚未登入，這個結果可能不完整」。這是刻意的：`caddy-reload`、
+   `caddy-rollback`、`caddy-validate`、`caddy-status`、`host-health` 都不需要使用者，
+   而「人不在家、網站壞了」正是最需要它們的時候。
 
-   以上任何一項咬到你就走橋。它以**登入中的使用者**身分執行，所以工具找得到、
-   profile 是對的、建出來的檔 owner 就是那個使用者：
+   **你的 action 沒有使用者就沒有意義的話，加這一行：**
 
    ```powershell
-   . "$PSScriptRoot\_userbridge.ps1"
-   Invoke-AsUser 'mytool restart'
-   exit $global:UserExitCode
+   # @only-when-logged-on
    ```
 
-   要寫一個屬於使用者的檔案就把整段丟進去（`@'...'@` 是不會展開變數的
-   here-string，`'@` 一定要頂在行首）：
+   那樣沒人登入時 actiond 會**直接回錯誤，不執行**，並且告訴使用者可以去登入或
+   重新開機（設了自動登入的機器，重開就會自己登入）。什麼時候該加：
 
-   ```powershell
-   . "$PSScriptRoot\_userbridge.ps1"
-   Invoke-AsUser @'
-   [IO.File]::WriteAllText('D:\projects\hello.txt', 'hello', [Text.UTF8Encoding]::new($false))
-   '@
-   exit $global:UserExitCode
-   ```
+   * 要開使用者看得見的視窗（服務開的視窗在 session 0，他看不到）
+   * 要讀他的設定或憑證（`~/.claude`、瀏覽器、SSH key）
+   * 要用只裝在使用者層級的工具
+   * **要寫進只有他有權限的目錄**
 
-   而且**服務開出來的視窗使用者在桌面上看不到** —— 要開使用者看得見的程式，
-   非走橋接不可。
+   為什麼寧可擋掉也不要跑：那些 action 在服務身分底下不會報錯，會回一個**看起來
+   成功的空答案** —— 使用者分不出「真的沒東西」和「我看不到你的東西」。
 
-   `.mjs` 沒辦法直接呼叫那個 PowerShell 函式，用 `_asuser.ps1` 這個轉接頭
-   （指令和輸出都走檔案，管線會把中文壓成系統 OEM codepage）。
-
-   **代價**：橋是使用者互動 session 裡的排程工作，所以 (a) 需要使用者處於登入
-   狀態，(b) 桌面上會閃過一個約 0.3 秒的視窗。那個閃光不是瑕疵 —— 互動式登入
-   正是 `RunLevel Limited` 能給出非提權 token 的原因。（不必登入又沒有視窗的
-   `S4U` 排程工作實測是**管理員**，拿它當通用的「以使用者身分執行」通道等於把
-   提權管道接回來，所以不要。）
-
-   所以**只有真的需要的 action 才走橋**。`caddy-reload` / `caddy-rollback` /
-   `caddy-validate` / `caddy-status` / `host-health` 都不要動 —— 它們的價值正是
-   人不在家、沒有人登入的時候也能用。
+   代價：橋需要那個使用者處於登入狀態。它不會閃視窗（用 `wscript.exe` 啟動，
+   完全不配置主控台），每支 action 多約 0.4 秒。
 
 ### 一頁網頁：`@page`
 

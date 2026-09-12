@@ -19,7 +19,7 @@
 #    3. 驗證設定 —— 不通過就停，不會裝出一個起不來的服務
 #    4. 安裝 caddy 與 actiond 兩個服務（開機自動啟動）
 #    5. 把 actiond 降到最小權限的服務帳號 —— 是管理員就停下來什麼都不裝
-#    6. 註冊「以使用者身分執行」的橋接排程工作
+#    6. 註冊「以使用者身分執行」的橋接排程工作 —— actiond 靠它跑每一支 action
 #    7. 安裝 /caddy 技能到 ~\.claude\skills\caddy\
 #
 #  只有這一步需要管理員。裝完之後所有設定變更都能用 HTTP 完成。
@@ -220,6 +220,14 @@ if ($ActiondUser) {
     $actiondAccount = 'NT AUTHORITY\LocalService'
 }
 
+# 橋接要以誰的身分執行。這個值有兩個地方要用（下面設 actiond 的環境變數、
+# 以及最後註冊排程工作），所以在這裡算一次就好。
+$bridgeUser = $BridgeUser
+if (-not $bridgeUser) {
+    $cs = Get-CimInstance Win32_ComputerSystem
+    if ($cs.UserName) { $bridgeUser = $cs.UserName }
+}
+
 $actiondSid = Get-AccountSid $actiondAccount
 if (-not $actiondSid) {
     throw ("查不到這個帳號：$actiondAccount" + [Environment]::NewLine +
@@ -330,10 +338,19 @@ if (Test-Path $nssm) {
 Say ''
 Say '=== 樣板 ==='
 Copy-Item (Join-Path $repo 'src\actiond\server.mjs') (Join-Path $Dir 'actiond') -Force
-Copy-Item (Join-Path $repo 'templates\actiond\user-bridge.ps1') (Join-Path $Dir 'actiond') -Force
+Copy-Item (Join-Path $repo 'templates\actiond\*') (Join-Path $Dir 'actiond') -Force
 Copy-Item (Join-Path $repo 'templates\actions\*') (Join-Path $Dir 'actions') -Force
 Copy-Item (Join-Path $repo 'templates\apps\*') (Join-Path $Dir 'apps') -Force
+New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'actiond\bridge') | Out-Null
 Say '  actiond / actions / apps'
+
+# 舊版的單插槽橋留下來的檔案。升級的時候要刪掉 —— 留著的話，看到 _userbridge.ps1
+# 還在的人會以為那條路還通，而它已經沒有對應的排程工作了。
+foreach ($stale in 'actiond\user-bridge.ps1', 'actiond\user-request.ps1',
+                   'actions\_userbridge.ps1', 'actions\_asuser.ps1') {
+    $p = Join-Path $Dir $stale
+    if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue; Say "  移除舊版檔案 $stale" }
+}
 
 # ---------------------------------------------------------------- 設定
 # 設定是 caddyctl 寫的，這裡只確認它在。
@@ -438,7 +455,10 @@ $actionPort = 9001
 if ($manifest -and $manifest.node -and $manifest.node.actiond_port) {
     $actionPort = $manifest.node.actiond_port
 }
-& $nssm set actiond AppEnvironmentExtra "ACTIONS_DIR=$Dir\actions" "ACTION_HOST=127.0.0.1" "ACTION_PORT=$actionPort" | Out-Null
+# BRIDGE_USER 是 actiond 判斷「要不要過橋」的依據，空的就等於整個橋停用
+# （每一支 action 都以服務帳號執行）。CADDY_DIR 讓它找得到 actiond\bridge\。
+& $nssm set actiond AppEnvironmentExtra "ACTIONS_DIR=$Dir\actions" "ACTION_HOST=127.0.0.1" `
+    "ACTION_PORT=$actionPort" "CADDY_DIR=$Dir" "BRIDGE_USER=$bridgeUser" "BRIDGE_TASK=caddy-bridge" | Out-Null
 
 # 把上面決定好的身分設上去。
 #
@@ -511,51 +531,65 @@ foreach ($n in 'caddy', 'actiond') {
 }
 
 # ---------------------------------------------------------------- 使用者身分橋接
+#
+# actiond 跑在 Windows session 0，身分是最小權限的服務帳號 —— 不是管理員，也不是
+# 使用者。那對安全是對的，但它有兩個使用者看得見的後果：產生的檔案 owner 不是他，
+# 而且被明確設過權限的目錄（例如 /_/p/ 指到的專案目錄）寫不進去。
+#
+# 所以 actiond **預設把每一支 action 都交給這座橋**：一個以登入中的使用者身分執行
+# 的排程工作，拿到的是互動式登入那個「過濾過的」token —— 是那個人，但不是管理員。
+# 沒有人登入的時候 actiond 退回自己執行，這樣 caddy-reload / host-health 那些不需要
+# 使用者的 action 在「人不在家、網站壞了」的時候仍然能用。
+#
+# RunLevel 是 Limited，不是 Highest。這座橋的用途是「以登入中的使用者身分執行」，
+# 不是「以管理員身分執行」—— 那是兩件事，給了 Highest 就把兩件事綁在一起了。
+# 而且提權會傳染：橋接跑什麼、什麼就是提權的，它再開出來的程式也是。實測過一次
+# —— 用橋接開起來的 Claude Code session 整個變成管理員身分，而它開著 bypass
+# permissions。副作用還不只安全：提權的行程，非提權的查詢者讀不到它的 PEB，
+# 於是 claude agents --json 驗證不了它，就把它從清單裡拿掉了。
+#
+# 用 wscript.exe 而不是直接 powershell.exe：排程工作在使用者的互動 session 裡執行，
+# powershell 會在那裡配置一個主控台，**而且是在它有機會套用 -WindowStyle Hidden
+# 之前** —— 實測 10 個工作閃 10 次。wscript 完全不配置主控台（這台的 pm2 也是這樣
+# 藏它的開機腳本）。
 Say ''
 Say '=== 使用者身分橋接 ==='
-$bu = $BridgeUser
-if (-not $bu) {
-    $cs = Get-CimInstance Win32_ComputerSystem
-    if ($cs.UserName) { $bu = $cs.UserName }
+
+# 舊版那個單插槽的橋（一次只能跑一個請求、固定的請求／回應檔）已經被取代。
+if (Get-ScheduledTask -TaskName 'caddy-user-bridge' -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName 'caddy-user-bridge' -Confirm:$false -ErrorAction SilentlyContinue
+    Say '  移除舊版的 caddy-user-bridge'
 }
-if ($bu) {
+
+if ($bridgeUser) {
     try {
-        $act = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Dir\actiond\user-bridge.ps1`""
-        # RunLevel 是 Limited，不是 Highest。這座橋的用途是「以登入中的使用者身分
-        # 執行」，不是「以管理員身分執行」—— 那是兩件事，給了 Highest 就把兩件事
-        # 綁在一起了。
-        #
-        # 而且提權是會傳染的：橋接跑什麼、什麼就是提權的，它再開出來的程式也是。
-        # 實測過一次 —— 用橋接開起來的 Claude Code session 整個變成管理員身分，
-        # 而它是開著 bypass permissions 的。那個 session 原本不是管理員。
-        #
-        # 副作用還不只安全：提權的行程，非提權的查詢者讀不到它的 PEB，
-        # 於是 claude agents --json 驗證不了它，就把它從清單裡拿掉了 ——
-        # 一個開得起來、RC 也連上了、但是列不出來的 session。
-        #
-        # 哪天真的有 action 需要管理員權限，那要另外一座橋、另外一個名字，
-        # 而且要在文件上寫明白。不要讓這一座悄悄地兼差。
-        $pri = New-ScheduledTaskPrincipal -UserId $bu -LogonType Interactive -RunLevel Limited
-        $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances IgnoreNew
-        Register-ScheduledTask -TaskName 'caddy-user-bridge' -Action $act -Principal $pri -Settings $set -Force | Out-Null
+        $act = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$Dir\actiond\bridge-hidden.vbs`""
+        $pri = New-ScheduledTaskPrincipal -UserId $bridgeUser -LogonType Interactive -RunLevel Limited
+        # Parallel 不是 IgnoreNew：actiond 每排一個工作就觸發一次，兩個 action 同時
+        # 進來的時候第二次觸發不能被丟掉，否則那個工作要等到下一次觸發才有人撿。
+        $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+                 -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -MultipleInstances Parallel
+        Register-ScheduledTask -TaskName 'caddy-bridge' -Action $act -Principal $pri -Settings $set -Force | Out-Null
+
         $svc = New-Object -ComObject 'Schedule.Service'
         $svc.Connect()
-        # actiond 不再是管理員了，所以要明著給它「觸發這個工作」的權限。
-        # 原本的 D: 只給 BA（管理員）、SY（SYSTEM）、IU（互動式使用者）——
-        # 而服務登入既不是 BA 也不是 IU。少了這條 ACE，actiond 呼叫
-        # Start-ScheduledTask 會被拒，於是 cc-rc 那一頁**整個不能用**
-        # （不是變慢，是死掉），openclaw-gateway-restart 也一樣。
-        # GRGX = 讀 + 執行：剛好夠觸發，不夠改工作的內容。
+        # actiond 不是管理員，所以要明著給它「觸發這個工作」的權限。預設的 DACL
+        # 只給 BA（管理員）、SY（SYSTEM）、IU（互動式使用者），而服務登入兩者都不是
+        # —— 少了這條 ACE，actiond 呼叫的時候會拿到「存取被拒」，而且**工作只是
+        # 安靜地沒有跑**。GRGX = 讀 + 執行：剛好夠觸發，不夠改工作的內容。
         $sd = 'D:(A;;GA;;;BA)(A;;GA;;;SY)(A;;GRGX;;;IU)(A;;GRGX;;;' + $actiondSid + ')'
-        $svc.GetFolder('\').GetTask('caddy-user-bridge').SetSecurityDescriptor($sd, 0)
-        Say "  已註冊，以 $bu 的身分執行"
-        Say '  （需要該使用者處於登入狀態；只有用到使用者層級工具的 action 才需要它）'
+        $svc.GetFolder('\').GetTask('caddy-bridge').SetSecurityDescriptor($sd, 0)
+
+        Say "  已註冊 caddy-bridge，以 $bridgeUser 的身分執行"
+        Say '  每一支 action 都會走它 —— 所以產生的檔案 owner 是那個使用者'
+        Say '  沒有人登入的時候，actiond 會退回以服務帳號執行，並在輸出裡標明'
     } catch {
         Say "  註冊失敗：$($_.Exception.Message)"
-        Say '  只有需要使用者層級工具的 action 會受影響'
+        Say '  actiond 仍然可以用，但每一支 action 都會以服務帳號執行'
     }
 } else {
-    Say '  找不到登入中的使用者，略過。之後可用 -BridgeUser 重跑'
+    Say '  找不到登入中的使用者，略過註冊。'
+    Say '  之後用 .\src\install.ps1 -BridgeUser <帳號> 重跑就會補上'
 }
 
 # ---------------------------------------------------------------- 技能

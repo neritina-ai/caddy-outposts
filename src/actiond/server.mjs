@@ -13,6 +13,7 @@
 //      # @group   hello
 //      # @confirm            <- 用 GET 開網址時先出確認頁，避免誤觸／預抓
 //      # @page               <- 這支腳本自己就是一個網頁，見下面 @page 那段
+//      # @only-when-logged-on <- 沒有人登入就不要執行，見下面「執行身分」那段
 //
 //  @page：一個檔案 = 一個動態網頁。腳本從環境變數拿到 ACTION_METHOD、
 //  ACTION_QUERY、ACTION_SELF，從 stdin 拿到表單 body，stdout 原樣當 HTML 送出。
@@ -23,8 +24,9 @@
 //            ACTION_DRAIN_MS
 // =============================================================================
 import http from 'node:http';
-import { spawn, execSync } from 'node:child_process';
-import { readdir, readFile } from 'node:fs/promises';
+import { spawn, spawnSync, execSync } from 'node:child_process';
+import { readdir, readFile, writeFile, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 // 系統的 OEM codepage，用來當子行程輸出的 UTF-8 解碼失敗時的退路
@@ -58,6 +60,65 @@ const DRAIN_MS  = Number(process.env.ACTION_DRAIN_MS || 150);
 // 逗號分隔的 IPv4 CIDR 白名單。空字串 = 不限制（只有在 HOST 綁 loopback 時才安全）。
 // 一旦 ACTION_HOST 不是 127.0.0.1，就一定要設這個。
 const ALLOW     = (process.env.ACTION_ALLOW || '').split(',').map(x => x.trim()).filter(Boolean);
+
+// =============================================================================
+//  執行身分：有人登入就以那個人的身分跑，沒有就以服務帳號跑
+//
+//  actiond 自己是 NT AUTHORITY\LocalService —— 不是管理員，也不是使用者。那是
+//  刻意的（actions 目錄等於可以用 HTTP 觸發的程式碼），但它有兩個使用者看得見的
+//  後果：產生的檔案 owner 不是他，而且被明確設過權限的目錄寫不進去。
+//
+//  所以預設**盡量過橋**：橋是一個以登入中的使用者身分執行的排程工作，拿到的是
+//  互動式登入那個「過濾過的」token —— 是那個人，但不是管理員。沒有人登入的時候
+//  就退回直接執行，這樣 caddy-reload / host-health 這些不需要使用者的 action
+//  在「人不在家、網站壞了」的時候仍然能用。需要使用者才有意義的 action 自己標
+//  @only-when-logged-on，沒人登入時直接回錯誤，不要跑出一個看起來成功的空答案。
+//
+//  BRIDGE_USER 空字串 = 整個橋停用，一律直接執行（沒有註冊橋的機器就是這樣）。
+const BRIDGE_USER = (process.env.BRIDGE_USER || '').split('\\').pop().trim();
+const BRIDGE_TASK = process.env.BRIDGE_TASK || 'caddy-bridge';
+const CADDY_DIR   = process.env.CADDY_DIR || path.resolve(ACTIONS_DIR, '..');
+const BRIDGE_DIR  = process.env.BRIDGE_DIR || path.join(CADDY_DIR, 'actiond', 'bridge');
+// 橋接排出去之後等多久算它沒回應。偵測說有人登入卻等不到，多半是 session 剛好在
+// 登出的路上 —— 退回直接執行比卡住好。
+const BRIDGE_WAIT = Number(process.env.BRIDGE_WAIT_MS || 15000);
+
+// quser 問一次約 18ms，但一個頁面可能連續問好幾次，所以短暫快取。
+// 快取太久會在使用者剛登出時把工作往一個不存在的 session 丟（那會靜靜地逾時）。
+let loginCache = { at: 0, value: false };
+const LOGIN_CACHE_MS = 2000;
+
+// 「那個使用者的 session 還在不在」——問的不是「有沒有人登入」。
+//
+// 用 quser，而且只比對使用者名稱那一欄：橋是綁在特定帳號上的排程工作，所以
+// 「主控台現在是誰」不是我們要的問題（切換使用者之後原本的 session 還在，橋照樣
+// 跑得動）。狀態欄是在地化字串，不解析。
+//
+// 實測淘汰掉的兩個做法，不要再拿回來用：
+//   * WTSGetActiveConsoleSessionId：登出之後回的是 2，不是文件說的 0xFFFFFFFF
+//     （登入畫面本身也佔一個 session），所以它根本分不出有沒有人登入。
+//   * 「先丟工作再看 Start-ScheduledTask 成不成功」：**沒有人登入時它照樣回報
+//     成功**（實測 108ms、不報錯），工作只是安靜地沒有跑。所以前置偵測是必要的，
+//     不是最佳化。
+function userLoggedOn() {
+  if (!BRIDGE_USER) return false;
+  const now = Date.now();
+  if (now - loginCache.at < LOGIN_CACHE_MS) return loginCache.value;
+  let out = '';
+  try {
+    out = decodeOutput(execSync('quser', { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch (e) {
+    // 一個 session 都沒有的時候 quser 的離開碼是非零，訊息在 stdout 上
+    out = e && e.stdout ? decodeOutput(e.stdout) : '';
+  }
+  const want = BRIDGE_USER.toLowerCase();
+  const found = out.split(/\r?\n/).slice(1).some(line => {
+    const first = line.trim().replace(/^>/, '').split(/\s+/)[0];
+    return first && first.toLowerCase() === want;
+  });
+  loginCache = { at: now, value: found };
+  return found;
+}
 
 const ip2int = ip => ip.split('.').reduce((a, o) => (a << 8 >>> 0) + (+o), 0) >>> 0;
 function ipAllowed(raw) {
@@ -111,14 +172,17 @@ async function listActions() {
     const ext = path.extname(f).toLowerCase();
     if (!RUNNERS[ext] || f.startsWith('_') || f.startsWith('.')) continue;
     const id = path.basename(f, ext);
-    const meta = { id, file: f, ext, title: id, desc: '', group: '', confirm: false, page: false };
+    const meta = { id, file: f, ext, title: id, desc: '', group: '', confirm: false,
+                   page: false, needsLogin: false };
     try {
       const head = (await readFile(path.join(ACTIONS_DIR, f), 'utf8')).split(/\r?\n/).slice(0, 25);
       for (const line of head) {
-        const m = /^\s*(?:#|\/\/|rem)\s*@(title|desc|group|confirm|page)\b[ \t]*(.*)$/i.exec(line);
+        const m = /^\s*(?:#|\/\/|rem)\s*@(title|desc|group|confirm|page|only-when-logged-on)\b[ \t]*(.*)$/i.exec(line);
         if (!m) continue;
         const k = m[1].toLowerCase(), v = m[2].trim();
-        if (k === 'confirm' || k === 'page') meta[k] = v === '' || /^(1|true|yes)$/i.test(v);
+        const on = v === '' || /^(1|true|yes)$/i.test(v);
+        if (k === 'only-when-logged-on') meta.needsLogin = on;
+        else if (k === 'confirm' || k === 'page') meta[k] = on;
         else meta[k] = v;
       }
     } catch { /* 讀不到就用預設值 */ }
@@ -145,10 +209,8 @@ function readBody(req, limit = 1000000) {
   });
 }
 
-function run(act, ctx) {
+function runDirect(cmd, args, ctx) {
   return new Promise(resolve => {
-    const file = path.join(ACTIONS_DIR, act.file);
-    const [cmd, args] = RUNNERS[act.ext](file);
     const started = Date.now();
     let killed = false, child;
     try {
@@ -217,6 +279,94 @@ function run(act, ctx) {
   });
 }
 
+// 排一個工作給橋，等它回來。協定寫在 actiond\bridge-runner.ps1 的檔頭。
+//
+// 這裡跟 runDirect 有一個講清楚的差別：**stdout 和 stderr 的交錯順序會消失**。
+// 橋把兩條管線分別寫成兩個檔（@page 要拿 stdout 當網頁送出去，混到 stderr 就
+// 壞了），所以合起來給 log 看的那份只能是「先全部 stdout、再全部 stderr」。
+// 直接執行那條路仍然保留真正的時間順序。
+async function runViaBridge(cmd, args, ctx) {
+  const started = Date.now();
+  const id  = randomUUID().replace(/-/g, '').slice(0, 12);
+  const tmp = path.join(BRIDGE_DIR, '.tmp-' + id);
+  const dir = path.join(BRIDGE_DIR, id);
+
+  try {
+    await mkdir(tmp, { recursive: true });
+    if (ctx) await writeFile(path.join(tmp, 'stdin.bin'), ctx.body || '', 'utf8');
+    await writeFile(path.join(tmp, 'job.json'), JSON.stringify({
+      exe: cmd, args, cwd: ACTIONS_DIR,
+      env: ctx ? ctx.env : null,
+      hasStdin: !!ctx,
+    }), 'utf8');
+    // 改名是不可分割的：runner 永遠不會看到寫到一半的工作。
+    await rename(tmp, dir);
+  } catch (e) {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {});
+    return { failed: true, code: -1, ms: Date.now() - started,
+             output: '排入橋接失敗：' + e.message, stdout: '' };
+  }
+
+  // schtasks 比 powershell 輕。它的離開碼**不能當作「工作真的跑了」**——
+  // 沒有人登入的時候它照樣回報成功（實測），所以下面靠 done.json 為準。
+  try { spawnSync('schtasks.exe', ['/run', '/tn', BRIDGE_TASK], { windowsHide: true }); } catch { /* 下面會逾時 */ }
+
+  const donePath = path.join(dir, 'done.json');
+  const deadline = Date.now() + Math.min(BRIDGE_WAIT, TIMEOUT);
+  let done = null;
+  while (Date.now() < deadline) {
+    try { done = JSON.parse(await readFile(donePath, 'utf8')); break; } catch { /* 還沒好 */ }
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  if (!done) {
+    // 工作可能還在跑；讓掃除機制去收，不要現在刪掉它正在寫的檔。
+    return { failed: true, code: -1, ms: Date.now() - started,
+             output: '橋接沒有在 ' + Math.min(BRIDGE_WAIT, TIMEOUT) + 'ms 內回應', stdout: '' };
+  }
+
+  let out = Buffer.alloc(0), err = Buffer.alloc(0);
+  try { out = await readFile(path.join(dir, 'stdout.bin')); } catch { /* 空的 */ }
+  try { err = await readFile(path.join(dir, 'stderr.bin')); } catch { /* 空的 */ }
+  await rm(dir, { recursive: true, force: true }).catch(() => {});
+
+  return {
+    code: done.exit, ms: Date.now() - started,
+    output: decodeOutput(Buffer.concat([out, err])),
+    stdout: decodeOutput(out),
+  };
+}
+
+// 逾時或 actiond 重啟會留下沒人收的工作目錄。半小時後掃掉，免得無限長大。
+async function sweepBridge() {
+  let names;
+  try { names = await readdir(BRIDGE_DIR); } catch { return; }
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const n of names) {
+    const p = path.join(BRIDGE_DIR, n);
+    try {
+      const st = await stat(p);
+      if (st.mtimeMs < cutoff) await rm(p, { recursive: true, force: true });
+    } catch { /* 別人正在動它就下次再說 */ }
+  }
+}
+
+// 選一條路執行。`online` 由呼叫端決定並傳進來，因為同一個請求裡要用同一個答案
+// （先拿它擋掉 @only-when-logged-on，再拿它選路，兩處必須一致）。
+async function run(act, ctx, online) {
+  const file = path.join(ACTIONS_DIR, act.file);
+  const [cmd, args] = RUNNERS[act.ext](file);
+  if (online) {
+    const r = await runViaBridge(cmd, args, ctx);
+    if (!r.failed) return { ...r, viaBridge: true };
+    // 偵測說有人登入，橋卻沒回應 —— 多半是 session 正在登出的路上。
+    // 標記過的 action 不能退回去用服務身分跑（那正是它標記的原因）。
+    if (act.needsLogin) return { ...r, viaBridge: false };
+  }
+  const r = await runDirect(cmd, args, ctx);
+  return { ...r, viaBridge: false };
+}
+
 const CSS = `
 :root{--bg:#fff;--fg:#1f2328;--mut:#59636e;--line:#d1d9e0;--card:#f6f8fa;--link:#0969da;--ok:#1a7f37;--bad:#cf222e}
 @media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#3d444d;--card:#151b23;--link:#4493f8;--ok:#3fb950;--bad:#f85149}}
@@ -255,6 +405,13 @@ const PAGE = (title, body) =>
 // 寫死成 /run 則是經過 Caddy 那條全部 404。所以兩個都不能寫死。
 const BASE_RE = /^(?:\/_)?\/run/;
 const baseOf = (pathname) => (BASE_RE.exec(pathname) || ['/run'])[0];
+
+// 使用者看得懂的話，不是機制。「這個結果是 LocalService 執行的」對按按鈕的人
+// 是廢話 —— 他不知道 LocalService 是誰，也不該需要知道。講後果就好。
+const OFFLINE_NOTE = user =>
+  user + ' 尚未登入，這個結果可能不完整';
+const OFFLINE_REFUSED = user =>
+  '這個動作需要 ' + user + ' 登入才有意義，目前沒有人登入，所以沒有執行。';
 
 const runForm = (base, id, label, cls) =>
   '<form method="POST" action="' + base + '/' + encodeURIComponent(id) + '">' +
@@ -304,6 +461,40 @@ const server = http.createServer(async (req, res) => {
   const wantsJson = url.searchParams.has('json');
   const wantsHtml = !wantsJson && /text\/html/.test(req.headers.accept || '');
 
+  // 整個請求只問一次，兩個地方用同一個答案：擋 @only-when-logged-on，以及選路。
+  const online = userLoggedOn();
+
+  // 標記過的 action：沒有人登入就不要跑。跑得出來的會是一個「看起來成功的空答案」
+  // ——那比明講錯誤更糟，因為使用者分不出「真的沒東西」和「我看不到你的東西」。
+  if (act.needsLogin && !online) {
+    const why = OFFLINE_REFUSED(BRIDGE_USER || '使用者');
+    if (wantsJson) {
+      return send(503, 'application/json; charset=utf-8', JSON.stringify(
+        { action: act.id, error: 'not-logged-on', message: why }, null, 2));
+    }
+    if (wantsHtml || act.page) {
+      // 兩個選項，便宜的先講。**重開機不做成主要按鈕**：那是一把大槌子，放在一則
+      // 小錯誤旁邊會教出「不能用就重開」的習慣，而且手機上很容易誤觸。
+      // （真的點下去也還有一層 —— reboot 帶 @confirm，GET 只會拿到確認頁。）
+      //
+      // 而且只有那支 action 真的存在才給連結。寫死一個不存在的網址，使用者點下去
+      // 得到 404，比不給連結更糟。
+      const hasReboot = (await listActions()).some(h => h.id === 'reboot');
+      const opts =
+        '<li>在那台機器上登入 —— 你人在旁邊的話這個最快，而且不會打斷別的東西</li>' +
+        (hasReboot
+          ? '<li>沒辦法碰到那台機器的話，<a href="' + base + '/reboot">重新開機</a>' +
+            '（這台設了自動登入，開機後會自己登入；會先出確認頁）</li>'
+          : '');
+      return send(503, 'text/html; charset=utf-8', PAGE(act.title,
+        '<h1>' + esc(act.title) + '</h1><p class="bad">' + esc(why) + '</p>' +
+        '<p>要讓它能用：</p><ul>' + opts + '</ul>' +
+        '<p class="bar"><a href="' + base + '">← 所有 action</a>' +
+        '<span>不需要使用者的 action 現在照樣能用</span></p>'));
+    }
+    return send(503, 'text/plain; charset=utf-8', why);
+  }
+
   // @page 的 action：它自己就是一個網頁。
   //
   // actiond 平常做的是「跑完把 log 貼出來」—— 輸出會被 esc 進 <pre>，而請求裡
@@ -329,7 +520,7 @@ const server = http.createServer(async (req, res) => {
         // 不是寫死的 —— 理由見上面 BASE_RE 那段。
         ACTION_SELF: base + '/' + act.id,
       },
-    });
+    }, online);
     if (r.code !== 0) {
       return send(500, 'text/html; charset=utf-8', PAGE(act.title,
         '<h1>' + esc(act.title) + '</h1>' +
@@ -353,12 +544,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   running.add(act.id);
-  const r = await run(act).finally(() => running.delete(act.id));
+  const r = await run(act, null, online).finally(() => running.delete(act.id));
   const ok = r.code === 0;
+  // 沒走成橋 = 這次是以服務身分跑的，看不到使用者的東西。講一聲，不要讓差異是安靜的。
+  const note = (BRIDGE_USER && !r.viaBridge) ? OFFLINE_NOTE(BRIDGE_USER) : '';
 
   if (wantsJson) {
     return send(ok ? 200 : 500, 'application/json; charset=utf-8',
-      JSON.stringify({ action: act.id, exit: r.code, ms: r.ms, output: r.output }, null, 2));
+      JSON.stringify({ action: act.id, exit: r.code, ms: r.ms,
+                       viaBridge: !!r.viaBridge, note: note || undefined,
+                       output: r.output }, null, 2));
   }
   if (wantsHtml) {
     return send(ok ? 200 : 500, 'text/html; charset=utf-8', PAGE(act.title,
@@ -366,11 +561,22 @@ const server = http.createServer(async (req, res) => {
       '<span class="' + (ok ? 'ok' : 'bad') + '">exit ' + r.code + '</span>' +
       '<span>' + r.ms + ' ms</span><a href="' + base + '">← 所有 action</a>' +
       runForm(base, act.id, '再跑一次') + '</div>' +
+      (note ? '<p class="bad">' + esc(note) + '</p>' : '') +
       '<pre>' + esc(r.output || '(沒有輸出)') + '</pre>'));
   }
   return send(ok ? 200 : 500, 'text/plain; charset=utf-8',
-    act.id + ' exit=' + r.code + ' ' + r.ms + 'ms\n\n' + r.output);
+    act.id + ' exit=' + r.code + ' ' + r.ms + 'ms' +
+    (note ? '\n' + note : '') + '\n\n' + r.output);
 });
 
-server.listen(PORT, HOST, () =>
-  console.log('actiond listening on http://' + HOST + ':' + PORT + '  actions=' + ACTIONS_DIR));
+server.listen(PORT, HOST, () => {
+  console.log('actiond listening on http://' + HOST + ':' + PORT + '  actions=' + ACTIONS_DIR);
+  if (BRIDGE_USER) {
+    console.log('  使用者身分橋接：' + BRIDGE_USER + ' 透過排程工作 ' + BRIDGE_TASK +
+                '（' + BRIDGE_DIR + '）');
+  } else {
+    console.log('  沒有設定 BRIDGE_USER —— 每個 action 都以服務帳號執行');
+  }
+  sweepBridge().catch(() => {});
+  setInterval(() => { sweepBridge().catch(() => {}); }, 10 * 60 * 1000).unref();
+});

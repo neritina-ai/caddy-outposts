@@ -11,7 +11,7 @@
 #  拔掉的東西（就是 install.ps1 建的那五樣）：
 #      1. caddy 與 actiond 兩個 Windows 服務
 #      2. 防火牆規則 "Caddy HTTP 80"（edge 還有 "Caddy HTTPS 443"）
-#      3. 排程工作 caddy-user-bridge
+#      3. 排程工作 caddy-bridge（以及舊版的 caddy-user-bridge）
 #      4. ~\.claude\skills\caddy 技能
 #      5. C:\Caddy 整個目錄
 #
@@ -148,15 +148,22 @@ if ($strays.Count) {
 
 Say ''
 Say '=== 排程工作 ==='
-if ($WhatIf) {
-    Say '  [WhatIf] 移除 caddy-user-bridge'
-} elseif (Get-ScheduledTask -TaskName 'caddy-user-bridge' -ErrorAction SilentlyContinue) {
-    Do-It '移除 caddy-user-bridge' {
-        Unregister-ScheduledTask -TaskName 'caddy-user-bridge' -Confirm:$false
+# caddy-user-bridge 是舊版那個單插槽的橋。升級過的機器上不會有它，
+# 但沒升級就直接移除的機器上會，所以兩個都要處理。
+$removed = $false
+foreach ($t in 'caddy-bridge', 'caddy-user-bridge') {
+    if ($WhatIf) {
+        if (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
+            Say ('  [WhatIf] 移除 ' + $t); $removed = $true
+        }
+    } elseif (Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue) {
+        Do-It ('移除 ' + $t) {
+            Unregister-ScheduledTask -TaskName $t -Confirm:$false
+        }
+        $removed = $true
     }
-} else {
-    Say '  本來就沒有'
 }
+if (-not $removed) { Say '  本來就沒有' }
 
 Say ''
 Say '=== /caddy 技能 ==='
