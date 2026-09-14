@@ -461,28 +461,76 @@ https://myfiles.duckdns.org/_/w/
 `C:\Caddy\` 底下的東西是 caddyctl **產生出來的快照**。`git pull` 之後那些檔案不會
 自己跟著變，**也不會有任何錯誤訊息** —— 舊版的行為就這樣安靜地繼續跑。
 
-所以每次更新完，把產生設定的指令重跑一次：
+`git pull` 之後要做三件事。它們互不重疊，**漏掉哪一件，那一部分就繼續跑舊的**，
+而且一樣不會有訊息。
+
+### 1. 產生出來的設定（`Caddyfile`、`conf\`）
 
 ```powershell
-# node —— 一行就好
 node src\caddyctl.mjs node init --reload
+```
 
-# edge —— 每個網域各重打一次完整的指令
+`node init` **沒帶的旗標會沿用現有設定**，所以重跑是安全的。唯一的例外是
+`--static` —— 它是宣告式的，原本是 static 的機器要記得把 `--static` 一起帶上。
+
+edge 的網域是另一回事：
+
+```powershell
 node src\caddyctl.mjs list                      # 先看現在是什麼設定
 node src\caddyctl.mjs edge set --name <label> ... --reload
 ```
 
-沒帶的旗標會沿用現有設定，所以重跑是安全的。**唯一的例外是 `--static`** ——
-它是宣告式的，原本是 static 的機器要記得把 `--static` 一起帶上。
+**`edge set` 是整份取代，不是合併 —— 沒帶到的旗標不會沿用，會被清掉。**
+少了 `--password` / `--password-hash`，那個網域就變成沒有密碼，而沒有密碼的網域
+**整段不路由 `/_*`**（那台機器從網際網路上消失）。現有的雜湊在
+`conf\sites\<label>.caddy` 裡撈得到，連同帳號一起：
 
-`conf\auth\` 的路徑密碼和 `apps\` 的 drop-in 不受影響。
+```powershell
+$site = "C:\Caddy\conf\sites\<label>.caddy"
+$m = [regex]::Match((Get-Content $site -Raw), '(?m)^\s+(\S+)\s+(\$2[abxy]?\$\d{2}\$\S{53})\s*$')
+node src\caddyctl.mjs edge set --name <label> --ip <位址> `
+    --password-hash "$($m.Groups[1].Value):$($m.Groups[2].Value)" --reload
+```
 
-`actiond\server.mjs` 換版的話要重啟那個服務。這是**唯一**需要管理員的日常操作：
+不要手貼那串雜湊：PowerShell 會把 `$2a$14$` 當成變數展開，貼進去的是一個殘缺的
+字串，而 `--password-hash` 會擋下來說它不是 bcrypt。
+
+記住登入用的 cookie 祕密會自動沿用，所以已經登入的手機不會被踢出去。
+`conf\auth\` 的路徑密碼和 `apps\` 的 drop-in 也不受影響。
+
+### 2. action 腳本（`actions\`）
+
+**`node init` 不碰 `actions\`**（那是 `install.ps1` 的地盤），所以產品附的 action
+有更新時，重跑 `node init` 不會讓它們變新。複製過去就好：
+
+```powershell
+Copy-Item templates\actions\* C:\Caddy\actions\ -Force
+```
+
+不用重啟也不用管理員 —— actiond 每次執行才讀那個檔案。**你自己寫的 action 不會
+被動到**：檔名不同就不在複製範圍內。
+
+### 3. actiond 本身（`actiond\server.mjs`）
+
+```powershell
+Copy-Item src\actiond\server.mjs C:\Caddy\actiond\server.mjs -Force
+```
+
+只有這一個要重啟服務才生效，**也是唯一需要管理員的日常操作**：
 
 ```powershell
 # 系統管理員 PowerShell
 Restart-Service actiond
 ```
+
+重啟之後看一眼 `C:\Caddy\logs\actiond.log` 的最後一行：
+
+```
+  登入偵測：<你的帳號> 登入中
+```
+
+人在電腦前卻寫著「目前沒有人登入」，就是偵測壞了 —— 那種狀態下每一支 action 都會
+退回服務帳號執行，而且是安靜地退。
 
 > **actiond 不是以管理員執行的。** 它跑在 `NT AUTHORITY\LocalService` 底下 ——
 > Windows 給服務用的最小權限身分。那不是可調的選項：`install.ps1` 會去查那個身分

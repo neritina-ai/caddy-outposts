@@ -313,8 +313,22 @@ node <caddy-outposts>\src\caddyctl.mjs node init --reload
 沒帶的旗標沿用現有設定，所以重跑是安全的。這台原本是 static 的話，記得把
 `--static` 一起帶上，否則會變回完整功能。
 
-edge 那台是另一回事（`edge set` 是取代，每個網域要重打完整指令），
-但那是 edge 上的人的事，不是你的。
+edge 那台是另一回事（`edge set` 是取代，每個網域要重打完整指令，
+**漏掉 `--password-hash` 會把那個網域的密碼清掉**），但那是 edge 上的人的事，
+不是你的。
+
+**`node init` 不碰 `actions\` 也不碰 `actiond\`**，所以只重跑它，那兩塊還是舊的：
+
+```powershell
+# 產品附的 action 有更新 —— 不用重啟，也不用管理員
+Copy-Item <caddy-outposts>\templates\actions\* C:\Caddy\actions\ -Force
+
+# actiond 本身換版 —— 這一個要管理員重啟
+Copy-Item <caddy-outposts>\src\actiond\server.mjs C:\Caddy\actiond\server.mjs -Force
+Restart-Service actiond
+```
+
+複製 `templates\actions\*` 不會動到使用者自己寫的 action：檔名不同就不在範圍內。
 
 ---
 
