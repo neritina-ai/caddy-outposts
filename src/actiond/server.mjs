@@ -424,12 +424,60 @@ pre{background:var(--card);border:1px solid var(--line);border-radius:10px;paddi
 .bad{color:var(--bad);font-weight:600}
 .bar{display:flex;gap:.8rem;align-items:center;font-size:.85rem;color:var(--mut);margin-bottom:1rem;flex-wrap:wrap}
 .bar form{margin:0}
+@keyframes spin{to{transform:rotate(1turn)}}
+.busy{opacity:.85;pointer-events:none}
+.busy::before{content:'';display:inline-block;width:.75em;height:.75em;margin-right:.45em;vertical-align:-.05em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+`;
+
+// 按下去到結果回來之間可能隔很久 —— 腳本本身最長跑 ACTION_TIMEOUT（預設兩分鐘），
+// 走橋的還要加上派工往返，而失敗的那種往往是等好等滿才放棄。這段時間頁面完全沒有
+// 變化，手機上連分頁那個載入指示都幾乎看不見，於是使用者以為沒按到、再按一次 ——
+// 變成同一支 action 跑兩遍。
+//
+// 所以送出的當下就把按鈕換成轉圈的「執行中…」，並且擋掉後續的送出。
+//
+// 兩個細節：
+//   * 擋第二次按用的是 CSS 的 pointer-events:none，**不是 disabled**。在 submit
+//     事件處理器裡把按鈕設成 disabled，有些瀏覽器會連帶把這次送出一起取消掉 ——
+//     那會變成按鈕轉著圈、action 卻根本沒跑，比原本的問題更糟。鍵盤送出繞得過
+//     pointer-events，所以 data-busy 那個旗標是第二道。
+//   * pageshow 那段是給「看完結果按返回鍵」用的：bfcache 把頁面連同忙碌狀態一起
+//     還原，沒有這段的話回到面板會看到一排轉著圈、按不下去的按鈕。
+const BUSY_JS = `
+document.addEventListener('submit', e => {
+  const f = e.target;
+  if (f.dataset.busy) { e.preventDefault(); return; }
+  f.dataset.busy = '1';
+  const b = f.querySelector('button');
+  if (!b) return;
+  b.dataset.label = b.textContent;
+  b.textContent = '執行中…';
+  b.classList.add('busy');
+});
+document.addEventListener('click', e => {
+  const a = e.target.closest && e.target.closest('a.btn');
+  if (!a || a.dataset.busy) return;
+  a.dataset.busy = '1';
+  a.dataset.label = a.textContent;
+  a.textContent = '開啟中…';
+  a.classList.add('busy');
+});
+addEventListener('pageshow', () => {
+  document.querySelectorAll('[data-busy]').forEach(el => {
+    delete el.dataset.busy;
+    const t = el.tagName === 'FORM' ? el.querySelector('button') : el;
+    if (!t) return;
+    t.classList.remove('busy');
+    if (t.dataset.label) t.textContent = t.dataset.label;
+  });
+});
 `;
 
 const PAGE = (title, body) =>
   '<!doctype html><html lang="zh-Hant"><meta charset="utf-8">' +
   '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-  '<title>' + esc(title) + '</title><style>' + CSS + '</style><main>' + body + '</main></html>';
+  '<title>' + esc(title) + '</title><style>' + CSS + '</style><main>' + body + '</main>' +
+  '<script>' + BUSY_JS + '</script></html>';
 
 // 這支 daemon 被掛在哪個前綴底下，是**由請求告訴它的**，不是寫死的。
 //

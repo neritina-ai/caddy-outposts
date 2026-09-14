@@ -258,12 +258,47 @@ button:disabled{background:var(--card);color:var(--mut);border-color:var(--line)
 pre{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.9rem;overflow-x:auto;font-size:.85rem;white-space:pre-wrap;word-break:break-word}
 .ok{color:var(--ok);font-weight:600}
 .bad{color:var(--bad);font-weight:600}
+@keyframes spin{to{transform:rotate(1turn)}}
+.busy{opacity:.85;pointer-events:none}
+.busy::before{content:'';display:inline-block;width:.75em;height:.75em;margin-right:.45em;vertical-align:-.05em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+`;
+
+// 送出之後畫面要立刻有變化 —— 重開一個 session 要跑十幾秒，中間完全不動的話使用者
+// 會以為沒按到、再按一次，而那會把剛起來的東西又殺一遍。
+//
+// 擋第二次按用 pointer-events:none，**不是 disabled**：在 submit 處理器裡把按鈕設成
+// disabled，有些瀏覽器會連帶把這次送出一起取消掉。pageshow 那段是給「按返回鍵回到
+// 這一頁」用的，bfcache 會把忙碌狀態一起還原。
+//
+// actiond 的面板有一份一樣的。@page 的 HTML 是這支腳本自己送出的，不經過 actiond
+// 的樣板，所以要自己帶 —— 就跟上面那整份 CSS 一樣。
+const BUSY_JS = `
+document.addEventListener('submit', e => {
+  const f = e.target;
+  if (f.dataset.busy) { e.preventDefault(); return; }
+  f.dataset.busy = '1';
+  const b = f.querySelector('button');
+  if (!b) return;
+  b.dataset.label = b.textContent;
+  b.textContent = '重開中…';
+  b.classList.add('busy');
+});
+addEventListener('pageshow', () => {
+  document.querySelectorAll('form[data-busy]').forEach(f => {
+    delete f.dataset.busy;
+    const b = f.querySelector('button');
+    if (!b) return;
+    b.classList.remove('busy');
+    if (b.dataset.label) b.textContent = b.dataset.label;
+  });
+});
 `;
 
 const page = (title, body) =>
   '<!doctype html><html lang="zh-Hant"><meta charset="utf-8">' +
   '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-  '<title>' + esc(title) + '</title><style>' + CSS + '</style><main>' + body + '</main></html>';
+  '<title>' + esc(title) + '</title><style>' + CSS + '</style><main>' + body + '</main>' +
+  '<script>' + BUSY_JS + '</script></html>';
 
 const ago = ms => {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
