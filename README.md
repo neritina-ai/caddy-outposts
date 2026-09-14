@@ -458,118 +458,25 @@ https://myfiles.duckdns.org/_/w/
 
 ## 更新 caddy-outposts
 
-`C:\Caddy\` 底下的東西全都是**快照** —— 一部分是 caddyctl 產生的（`Caddyfile`、
-`conf\`），一部分是 `install.ps1` 複製過去的（`actions\`、`actiond\`、`apps\`）。
-`git pull` 之後那些檔案不會自己跟著變，**也不會有任何錯誤訊息** ——
-舊版的行為就這樣安靜地繼續跑。
-
-**更新就是再跑一次安裝**，兩行，跟第一次裝的時候一模一樣：
+`git pull` 之後，每台兩步：
 
 ```powershell
-# 1. 設定 —— 普通 PowerShell
+# 1. 重新產生設定（普通視窗）—— node 用上面那行，edge 用下面那行
 node src\caddyctl.mjs node init --reload
+node src\caddyctl.mjs edge init --reload
 
-# 2. 其他全部 —— 系統管理員 PowerShell
+# 2. 其餘全部（系統管理員）
 .\src\install.ps1
 ```
 
-`install.ps1` 是照著「可以重跑」寫的，所以第二次跑就是一次完整更新：
+**兩步都要做，而且都不用帶參數** —— 現有設定會沿用，包括 edge 每個網域的密碼。
+只做第 1 步的話，`actions\` 和 `actiond\` 會安靜地繼續跑舊版。
 
-| 它會做的 | |
-|---|---|
-| `caddy.exe`、`nssm.exe` | 已經在就跳過，不重新下載 |
-| `actions\`、`actiond\server.mjs`、`apps\` | 一律複製成最新的 |
-| ACL、防火牆、使用者身分橋接、`/caddy` 技能 | 重設 |
-| caddy 和 actiond 兩個服務 | 重裝，等於重啟 |
+你的東西一個都不會動到：`<槽>\www`、`<槽>\projects`、`<槽>\workspaces`、
+你自己寫在 `actions\` 裡的腳本、`conf\auth\` 的路徑密碼、`apps\` 底下的 app 路由。
 
-| 它不會碰的 | |
-|---|---|
-| `conf\` | caddyctl 的地盤，它只確認 `Caddyfile` 在不在 |
-| `<槽>\www\index.html` | 已存在就保留 |
-| 你自己寫的 action | 不在 `templates\actions\` 裡的檔名都不在複製範圍內 |
-
-> **會有幾秒的服務中斷。** 服務是先移除再裝回來的，那段時間網站是沒有的 ——
-> node 上是內網的幾秒，edge 上是對外的幾秒。
-
-**只做第 1 步是不夠的。** `node init` 只管 `Caddyfile` 和 `conf\`，不碰
-`actions\` 也不碰 `actiond\` —— 只重跑它的話，那兩塊會安靜地繼續跑舊版。
-
-`node init` 沒帶的旗標會沿用現有設定，所以重跑是安全的。唯一的例外是
-`--static` —— 它是宣告式的，原本是 static 的機器要記得把 `--static` 一起帶上。
-
-### edge 那台的第 1 步是 `edge init`
-
-```powershell
-node src\caddyctl.mjs edge init --reload
-```
-
-**一樣什麼都不用帶** —— `--token` 只有第一次設定需要，之後它會從現有的
-`global.caddy` 讀回來，並照 manifest 把每一個網域重新產生一次。
-
-manifest 裡沒有的東西（密碼雜湊、記住登入用的 cookie 祕密、`--hold` 的自訂訊息）
-會從舊的 `conf\sites\<label>.caddy` 撈回來原樣寫回去，所以**密碼不變，已經登入的
-手機也不會被踢出去**。你不必回想當初每個網域是怎麼設的。
-
-某個網域的雜湊撈不到（那個檔被手動編輯過），它會**整個停下來**，並指名是哪個網域、
-少了哪個帳號。沒有密碼的網域整段不路由 `/_*`，所以它不猜 —— 那種情況用
-`edge set` 把那一個網域單獨重設就好。
-
-`conf\auth\` 的路徑密碼和 `apps\` 的 drop-in 都不受影響。
-
-### 更新完看一行
-
-`C:\Caddy\logs\actiond.log` 的最後一行：
-
-```
-  登入偵測：<你的帳號> 登入中
-```
-
-人在電腦前卻寫著「目前沒有人登入」，就是偵測壞了 —— 那種狀態下每一支 action 都會
-退回服務帳號執行，而且是安靜地退。
-
-> **actiond 不是以管理員執行的。** 它跑在 `NT AUTHORITY\LocalService` 底下 ——
-> Windows 給服務用的最小權限身分。那不是可調的選項：`install.ps1` 會去查那個身分
-> 實際的群組成員資格，發現它是 `Administrators` 的成員就**停下來什麼都不裝**。
->
-> 理由是 actiond 的工作就是執行 `C:\Caddy\actions\` 裡的東西 —— 它本質上是一台
-> RCE 機器，權限等級直接等於那個目錄的爆炸半徑。而**服務登入不經過 UAC 過濾**：
-> 填一個管理員帳號進去，拿到的是完整、沒削過的管理員 token。
->
-> 用別的帳號要自己指定，而且一樣會被檢查：
->
-> ```powershell
-> .\src\install.ps1 -ActiondUser .\<帳號>
-> ```
->
-> 代價是 actiond 讀不到你的使用者設定。需要使用者層級工具的 action
-> （`cc-rc`、`openclaw-gateway-restart`）改走使用者身分的橋接，**那條路要你處於
-> 登入狀態**。`caddy-reload` / `caddy-rollback` / `caddy-validate` / `caddy-status` /
-> `host-health` 不受影響 —— 它們不需要橋，人不在家也能用。
-
-重啟之後行為還是舊的，代表有殘留行程佔著埠（服務被重裝過、或上一個實例沒收乾淨
-的時候會這樣）。停掉服務、確認沒人佔著 9001、再起來：
-
-```powershell
-Stop-Service actiond -Force
-Get-NetTCPConnection -LocalPort 9001 -State Listen -ErrorAction SilentlyContinue |
-    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
-Start-Service actiond
-```
-
-中間那行沒有輸出是正常的 —— 代表本來就沒有殘留，服務停掉就把埠放開了。
-
-### 內容目錄是你的
-
-`install.ps1` 對 `<槽>\www` 只做兩件事：把目錄建出來，以及在 `index.html`
-**不存在時**放一頁可以直接刪掉的起始頁。你改過的東西它不會碰。
-
-產品自己的檔案一個都不放在那裡：
-
-| 檔案 | |
-|---|---|
-| `C:\Caddy\conf\panel.html` | 控制面板（`/_`），caddyctl 產生 |
-| `C:\Caddy\conf\configs.html` | `/_/c/` 的索引，caddyctl 產生 |
-| `C:\Caddy\conf\md.html` | Markdown 渲染樣板 |
+第 2 步會重裝服務，所以有幾秒的中斷。跑完看一眼 `C:\Caddy\logs\actiond.log`
+最後一行是不是「登入偵測：<你的帳號> 登入中」。
 
 ---
 
@@ -667,7 +574,7 @@ node src\caddyctl.mjs node init [--drive E:] [--static] [--home <路徑>]
 node src\caddyctl.mjs edge init --token <duckdns token>
 
 # 裝服務（要管理員。git pull 之後再跑一次就是一次更新）
-.\src\install.ps1 [-SkipSkill] [-SystemAccount]
+.\src\install.ps1 [-SkipSkill] [-SystemAccount] [-ActiondUser .\<帳號>]
 
 # 網域
 node src\caddyctl.mjs list
