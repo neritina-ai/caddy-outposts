@@ -28,8 +28,8 @@
 // 共用同一份對「什麼算一個 session」的認知，拆成兩個檔會立刻開始各自漂移。
 
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, readFileSync, rmSync, statSync, openSync, readSync, closeSync,
-         readdirSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, renameSync, rmSync, statSync, openSync, readSync,
+         closeSync, readdirSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
@@ -386,6 +386,86 @@ if (METHOD !== 'POST') {
   process.exit(0);
 }
 
+// =============================================================================
+//  工作區信任
+// =============================================================================
+//
+// 停在「是否信任這個資料夾」的 session 沒有輸入框，也不會登記到
+// `claude agents --json` 裡 —— 所以手機上既看不到它，也答不了那個問題。
+//
+// **resume 一樣會被問。** 而且比開新的更糟：走到那一步的時候，原本那個 session
+// 已經被殺掉了，於是使用者按一下的結果是「本來在跑的東西不見了，換來一個卡住的
+// 視窗」。cc-open 有同一段邏輯 —— 兩支是各自獨立的 action，有人只裝其中一支，
+// 所以寧可重複也不共用一個檔案。
+//
+// 答案其實只是使用者設定裡的一個旗標，而且會繼承：已經信任的目錄底下新開一個
+// 子目錄不會再問（實測：信任 D:\projects 之後，它底下的新目錄直接進提示；
+// 同一個目錄放在沒信任的 D:\ 底下就會停在對話框）。所以上面沒有東西涵蓋它的
+// 時候，自己把那個旗標寫進去，問題就不存在了。
+//
+// 這是這個檔案唯一碰 Claude Code 內部檔案的地方，所以做成盡力而為：有信任的
+// 上層就跳過，失敗就吞掉並回報，而重開的結果一律回頭用 `claude agents --json`
+// 驗證（那才是官方答案）。哪天這個旗標失效了，session 會停在對話框上、驗證會
+// 說它沒回來，頁面也會告訴使用者去電腦前按 Yes。
+const CLAUDE_CONFIG = path.join(homedir(), '.claude.json');
+
+// Claude Code 寫進去的鍵是正斜線的（"D:/projects/foo"）。
+const trustKey = dir => dir.split('\\').join('/').replace(/\/+$/, '');
+
+// **鍵是照它存的樣子比對，不做正規化。** 舊版會用反斜線寫同一個目錄，所以一份
+// 設定裡可能同時有 "D:/projects" 和 "D:\projects"，而 Claude Code 只認正斜線
+// 那筆（實測：信任 "D:\projects"、沒信任 "D:/projects" 時，它底下的新目錄照樣
+// 停在對話框）。在這裡把反斜線折進來，會讓一個即將被問的目錄被判成「已經信任」，
+// 於是就跳過了那一次唯一有用的寫入。
+const stored = k => String(k).replace(/\/+$/, '').toLowerCase();
+
+// **那個目錄自己那一筆說了算。** 繼承只補「完全沒有記錄」的目錄：明確的 `false`
+// **不會**被上層的 `true` 蓋過去（2026-09-14 在 pc-b 實測：`D:/projects` 是
+// true、`D:/projects/myproj` 是 false，session 照樣停在對話框上）。把上層
+// 當成足夠，剛好就是「跳過那一次唯一有用的寫入」的情況 —— 而這也是它一直沒被
+// 發現的原因：當初寫這段的那台機器上沒有任何一筆 false 可以踩到。
+function coveredByTrust(projects, dir) {
+  const want = trustKey(dir).toLowerCase();
+  let inherited = false;
+  for (const [k, v] of Object.entries(projects || {})) {
+    const have = stored(k);
+    if (have.includes('\\')) continue;                   // 舊格式的鍵，不被採用
+    if (have === want) return v?.hasTrustDialogAccepted === true;
+    if (v?.hasTrustDialogAccepted === true && want.startsWith(have + '/')) inherited = true;
+  }
+  return inherited;
+}
+
+// 回傳一個短字串給結果頁：
+//   'covered' —— 它自己或上層已經在信任範圍內
+//   'seeded'  —— 這次替它寫了旗標
+//   其他都是「為什麼沒能寫」，用使用者看得懂的話。
+function ensureTrusted(dir) {
+  let cfg;
+  try {
+    cfg = JSON.parse(readFileSync(CLAUDE_CONFIG, 'utf8'));
+  } catch (e) {
+    return '讀不到 Claude Code 的設定（' + e.code + '）';
+  }
+  if (coveredByTrust(cfg.projects, dir)) return 'covered';
+
+  const key = trustKey(dir);
+  cfg.projects = cfg.projects || {};
+  cfg.projects[key] = { ...(cfg.projects[key] || {}), hasTrustDialogAccepted: true };
+
+  // 寫在真的那個檔旁邊再 rename 蓋過去：讀的人不會看到半份設定，而另一個 session
+  // 同時寫入可能被蓋掉的窗口，只有一次 rename 那麼寬。
+  const tmp = CLAUDE_CONFIG + '.cc-rc-' + randomUUID().slice(0, 8);
+  try {
+    writeFileSync(tmp, JSON.stringify(cfg, null, 2), 'utf8');
+    renameSync(tmp, CLAUDE_CONFIG);
+    return 'seeded';
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch { /* 沒東西要收 */ }
+    return '寫不進 Claude Code 的設定（' + e.code + '）';
+  }
+}
+
 // ---------------------------------------------------------------- POST
 let raw = '';
 try { raw = readFileSync(0, 'utf8'); } catch { /* 沒有 body 就當成空的 */ }
@@ -456,6 +536,13 @@ function Hide-CcWindow([string]$Suffix) {
     return $false
 }
 `;
+
+// 先把信任處理掉，再殺任何東西 —— 見上面那一段。同一個目錄只問一次（勾了兩個
+// 同專案的 session 是常態）。
+const trust = new Map();
+for (const a of picked) {
+  if (!trust.has(a.cwd)) trust.set(a.cwd, ensureTrusted(a.cwd));
+}
 
 const script = ['$ErrorActionPreference = "Continue"', WINDOW_HELPER];
 for (const a of picked) {
@@ -529,6 +616,27 @@ const backHome = () => {
     '要同一個 session 就用 <code>--resume</code>。</p></details></div>';
 };
 
+// 信任只在「做了什麼」或「沒能做」的時候講。全部都在信任範圍內是常態，
+// 每次都報一次沒發生的事，只會教會使用者跳過這一頁。
+const trustNote = () => {
+  const rows = [...trust.entries()].filter(([, s]) => s !== 'covered');
+  if (!rows.length) return '';
+  const names = list => list.map(([d]) => '<code>' + esc(shortCwd(d)) + '</code>').join('、');
+  const seeded = rows.filter(([, s]) => s === 'seeded');
+  const failed = rows.filter(([, s]) => s !== 'seeded');
+  let out = '';
+  if (seeded.length) {
+    out += '<div class="note">先替 ' + names(seeded) + ' 記下了「信任這個資料夾」' +
+      '—— 沒有這一步，resume 會停在那個對話框上，而原本的 session 已經關掉了。</div>';
+  }
+  if (failed.length) {
+    out += '<div class="note"><span class="bad">沒能先記下信任</span>：' +
+      failed.map(([d, s]) => '<code>' + esc(shortCwd(d)) + '</code>（' + esc(s) + '）').join('、') +
+      '。這幾個可能停在「是否信任這個資料夾」上，要有人在電腦前按 Yes。</div>';
+  }
+  return out;
+};
+
 const ok = run.code === 0 && !pending.length;
 const result =
   '<h1>Remote Control</h1>' +
@@ -538,6 +646,7 @@ const result =
     : (picked.length - pending.length) + ' 個已經重開好了（' + waited + ' 秒），手機上應該看得到') +
   '</p>' +
   (run.text ? '<pre>' + esc(run.text) + '</pre>' : '') +
+  trustNote() +
   (run.code === 0 ? backHome() : '') +
   (pending.length ? '<div class="note">沒回來的那些：行程停掉了，但新的還沒登記自己。' +
     '重新整理這一頁看看 —— 它們可能只是起得比較慢，' +

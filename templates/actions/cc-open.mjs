@@ -166,15 +166,23 @@ const trustKey = dir => dir.split('\\').join('/').replace(/\/+$/, '');
 // asked about, and then we would skip the one write that avoids the question.
 const stored = k => String(k).replace(/\/+$/, '').toLowerCase();
 
+// **The directory's own entry wins.** Inheritance only fills in for directories
+// that have no entry at all: an explicit `false` is NOT overridden by a trusted
+// parent (measured on pc-b 2026-09-14 -- "D:/projects" true,
+// "D:/projects/myproj" false, and the session still stopped on the
+// dialog). Treating the parent as sufficient there is exactly the case where we
+// skip the one write that would have helped, which is how this went unnoticed:
+// the machine where it was first written had no `false` entries to trip over.
 function coveredByTrust(projects, dir) {
   const want = trustKey(dir).toLowerCase();
+  let inherited = false;
   for (const [k, v] of Object.entries(projects || {})) {
-    if (!v || v.hasTrustDialogAccepted !== true) continue;
     const have = stored(k);
     if (have.includes('\\')) continue;                   // legacy key, not honoured
-    if (want === have || want.startsWith(have + '/')) return true;
+    if (have === want) return v?.hasTrustDialogAccepted === true;
+    if (v?.hasTrustDialogAccepted === true && want.startsWith(have + '/')) inherited = true;
   }
-  return false;
+  return inherited;
 }
 
 // Returns a short status for the diagnostics on the result page:
