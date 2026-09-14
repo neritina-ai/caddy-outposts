@@ -13,10 +13,12 @@
 #      2. 防火牆規則 "Caddy HTTP 80"（edge 還有 "Caddy HTTPS 443"）
 #      3. 排程工作 caddy-bridge（以及舊版的 caddy-user-bridge）
 #      4. ~\.claude\skills\caddy 技能
-#      5. C:\Caddy 整個目錄
+#      5. C:\Caddy —— 但 actions\ 裡你自己寫的腳本留在原地，見下面
 #
-#  **網站內容不會被刪。** <槽>\www、<槽>\projects、<槽>\workspaces 一律留著 ——
-#  那是你的資料，不是這個產品的東西。要清就自己手動刪。
+#  **你的東西不會被刪。** 網站內容（<槽>\www、<槽>\projects、<槽>\workspaces）
+#  一律留著。`C:\Caddy\actions\` 裡不是範本裝的那些腳本也留著 —— 技能教的就是
+#  「往那個目錄丟一個檔案就多一個 action」，所以那裡本來就混著你寫的東西，
+#  而它只存在那一份。跑完會列出留下了哪些，要清請自己手動刪。
 #
 #  為什麼需要這支程式：nssm.exe 本身就是那兩個服務的執行檔，所以只要服務還在跑，
 #  nssm.exe 和 logs\ 就刪不掉（「檔案正由另一個程序使用」）。順序一定是
@@ -211,12 +213,40 @@ if (-not $oc) {
 
 Say ''
 Say "=== $Dir ==="
+
+# actions\ 是唯一一個「產品的東西和使用者的東西混在同一個目錄」的地方 —— 技能教的
+# 就是往那裡丟一個檔案。所以刪之前先分辨：範本裝的那幾支照刪，剩下的是使用者寫的，
+# 原地留著不動。那些腳本只存在那一份，刪掉就沒了。
+#
+# 依據是 repo 裡的 templates\actions\。這支腳本被複製到別的地方執行時（從
+# \\主機\Caddy\uninstall.ps1 跑就是這種情況）拿不到那份清單 —— 那就整個 actions\
+# 都留著。寧可留下幾支我們自己的檔案，也不要誤刪使用者寫的東西。
+$repo        = Split-Path $PSScriptRoot -Parent
+$tplActions  = Join-Path $repo 'templates\actions'
+$actionsDir  = Join-Path $Dir 'actions'
+$fromTemplate = $null
+if (Test-Path $tplActions) {
+    $fromTemplate = @(Get-ChildItem $tplActions -File -ErrorAction SilentlyContinue |
+                      ForEach-Object { $_.Name })
+}
+# 子目錄一律算使用者的 —— 範本裡沒有任何子目錄。
+$keep = @()
+if (Test-Path $actionsDir) {
+    $keep = @(Get-ChildItem $actionsDir -Force -ErrorAction SilentlyContinue | Where-Object {
+        $null -eq $fromTemplate -or $_.PSIsContainer -or $fromTemplate -notcontains $_.Name
+    })
+}
+
 if ($KeepFiles) {
     Say '  -KeepFiles：保留不刪'
 } elseif (-not (Test-Path $Dir)) {
     Say '  本來就不存在'
 } elseif ($WhatIf) {
-    Say "  [WhatIf] 刪除 $Dir 整個目錄"
+    if ($keep.Count) {
+        Say ("  [WhatIf] 刪除 $Dir，但留下 actions\ 裡那 {0} 個不是範本裝的東西" -f $keep.Count)
+    } else {
+        Say "  [WhatIf] 刪除 $Dir 整個目錄"
+    }
 } else {
     # 工作目錄如果在 C:\Caddy 裡面，Windows 不會讓你刪掉它 —— 而這支腳本本身
     # 就可能被放在那裡執行（從 \\主機\Caddy\uninstall.ps1 跑就是這種情況）。
@@ -230,8 +260,23 @@ if ($KeepFiles) {
     # 一次刪不掉多半是還有 handle 沒放開。報出到底是哪個檔，比丟一句
     # 「拒絕存取」有用得多。
     try {
-        Remove-Item $Dir -Recurse -Force -ErrorAction Stop
-        Say "  已刪除 $Dir"
+        if ($keep.Count) {
+            # actions\ 以外的全刪，actions\ 裡只刪範本裝的那幾支。
+            foreach ($item in (Get-ChildItem $Dir -Force -ErrorAction Stop)) {
+                if ($item.FullName -eq $actionsDir) { continue }
+                Remove-Item $item.FullName -Recurse -Force -ErrorAction Stop
+            }
+            if ($fromTemplate) {
+                foreach ($n in $fromTemplate) {
+                    $p = Join-Path $actionsDir $n
+                    if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+                }
+            }
+            Say "  已清空 $Dir，但留下 actions\（見最後一段）"
+        } else {
+            Remove-Item $Dir -Recurse -Force -ErrorAction Stop
+            Say "  已刪除 $Dir"
+        }
     } catch {
         Say ("  刪不掉：" + $_.Exception.Message)
         Say ''
@@ -255,6 +300,20 @@ Say ''
 Say '=== 沒有動到的東西 ==='
 Say '  網站內容（<槽>\www、<槽>\projects、<槽>\workspaces）一律保留 —— 那是你的資料。'
 Say '  Node.js 也留著。'
+if ($keep.Count -and -not $KeepFiles) {
+    Say ''
+    if ($null -eq $fromTemplate) {
+        Say ("  {0} 整個留著。" -f $actionsDir)
+        Say '  這支腳本不是從 repo 裡跑的，比對不到 templates\actions\ 那份清單，'
+        Say '  分不出哪幾支是你寫的 —— 所以一個都沒刪，裡面混著我們裝的 caddy-* 。'
+    } else {
+        Say ('  {0} 底下有 {1} 個不是範本裝的東西，那是你寫的 action，留在原地：' -f $actionsDir, $keep.Count)
+        foreach ($k in $keep) { Say ('    ' + $k.Name + $(if ($k.PSIsContainer) { '\' } else { '' })) }
+    }
+    Say ''
+    Say '  確定不要了就自己刪：'
+    Say ("      Remove-Item '$Dir' -Recurse -Force")
+}
 Say ''
 Say '完成。這台現在可以當成空機重新安裝：'
 Say '    node src\caddyctl.mjs node init      （或 edge init --token <token>）'
