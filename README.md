@@ -458,22 +458,46 @@ https://myfiles.duckdns.org/_/w/
 
 ## 更新 caddy-outposts
 
-`C:\Caddy\` 底下的東西是 caddyctl **產生出來的快照**。`git pull` 之後那些檔案不會
-自己跟著變，**也不會有任何錯誤訊息** —— 舊版的行為就這樣安靜地繼續跑。
+`C:\Caddy\` 底下的東西全都是**快照** —— 一部分是 caddyctl 產生的（`Caddyfile`、
+`conf\`），一部分是 `install.ps1` 複製過去的（`actions\`、`actiond\`、`apps\`）。
+`git pull` 之後那些檔案不會自己跟著變，**也不會有任何錯誤訊息** ——
+舊版的行為就這樣安靜地繼續跑。
 
-`git pull` 之後要做三件事。它們互不重疊，**漏掉哪一件，那一部分就繼續跑舊的**，
-而且一樣不會有訊息。
-
-### 1. 產生出來的設定（`Caddyfile`、`conf\`）
+**更新就是再跑一次安裝**，兩行，跟第一次裝的時候一模一樣：
 
 ```powershell
+# 1. 設定 —— 普通 PowerShell
 node src\caddyctl.mjs node init --reload
+
+# 2. 其他全部 —— 系統管理員 PowerShell
+.\src\install.ps1
 ```
 
-`node init` **沒帶的旗標會沿用現有設定**，所以重跑是安全的。唯一的例外是
+`install.ps1` 是照著「可以重跑」寫的，所以第二次跑就是一次完整更新：
+
+| 它會做的 | |
+|---|---|
+| `caddy.exe`、`nssm.exe` | 已經在就跳過，不重新下載 |
+| `actions\`、`actiond\server.mjs`、`apps\` | 一律複製成最新的 |
+| ACL、防火牆、使用者身分橋接、`/caddy` 技能 | 重設 |
+| caddy 和 actiond 兩個服務 | 重裝，等於重啟 |
+
+| 它不會碰的 | |
+|---|---|
+| `conf\` | caddyctl 的地盤，它只確認 `Caddyfile` 在不在 |
+| `<槽>\www\index.html` | 已存在就保留 |
+| 你自己寫的 action | 不在 `templates\actions\` 裡的檔名都不在複製範圍內 |
+
+> **會有幾秒的服務中斷。** 服務是先移除再裝回來的，那段時間網站是沒有的 ——
+> node 上是內網的幾秒，edge 上是對外的幾秒。
+
+**只做第 1 步是不夠的。** `node init` 只管 `Caddyfile` 和 `conf\`，不碰
+`actions\` 也不碰 `actiond\` —— 只重跑它的話，那兩塊會安靜地繼續跑舊版。
+
+`node init` 沒帶的旗標會沿用現有設定，所以重跑是安全的。唯一的例外是
 `--static` —— 它是宣告式的，原本是 static 的機器要記得把 `--static` 一起帶上。
 
-edge 的網域是另一回事：
+### edge 那台的第 1 步不一樣
 
 ```powershell
 node src\caddyctl.mjs list                      # 先看現在是什麼設定
@@ -498,32 +522,9 @@ node src\caddyctl.mjs edge set --name <label> --ip <位址> `
 記住登入用的 cookie 祕密會自動沿用，所以已經登入的手機不會被踢出去。
 `conf\auth\` 的路徑密碼和 `apps\` 的 drop-in 也不受影響。
 
-### 2. action 腳本（`actions\`）
+### 更新完看一行
 
-**`node init` 不碰 `actions\`**（那是 `install.ps1` 的地盤），所以產品附的 action
-有更新時，重跑 `node init` 不會讓它們變新。複製過去就好：
-
-```powershell
-Copy-Item templates\actions\* C:\Caddy\actions\ -Force
-```
-
-不用重啟也不用管理員 —— actiond 每次執行才讀那個檔案。**你自己寫的 action 不會
-被動到**：檔名不同就不在複製範圍內。
-
-### 3. actiond 本身（`actiond\server.mjs`）
-
-```powershell
-Copy-Item src\actiond\server.mjs C:\Caddy\actiond\server.mjs -Force
-```
-
-只有這一個要重啟服務才生效，**也是唯一需要管理員的日常操作**：
-
-```powershell
-# 系統管理員 PowerShell
-Restart-Service actiond
-```
-
-重啟之後看一眼 `C:\Caddy\logs\actiond.log` 的最後一行：
+`C:\Caddy\logs\actiond.log` 的最後一行：
 
 ```
   登入偵測：<你的帳號> 登入中
@@ -667,11 +668,11 @@ Caddy 用的是記憶體裡的設定 —— 只有服務重啟才會吃到壞檔
 ## 指令速查
 
 ```powershell
-# 設定這台機器（每台一次，普通視窗）
+# 設定這台機器（普通視窗。更新時跑的也是這兩行的第一行）
 node src\caddyctl.mjs node init [--drive E:] [--static] [--home <路徑>]
 node src\caddyctl.mjs edge init --token <duckdns token>
 
-# 裝服務（每台一次，要管理員）
+# 裝服務（要管理員。git pull 之後再跑一次就是一次更新）
 .\src\install.ps1 [-SkipSkill] [-SystemAccount]
 
 # 網域

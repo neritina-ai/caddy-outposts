@@ -313,22 +313,21 @@ node <caddy-outposts>\src\caddyctl.mjs node init --reload
 沒帶的旗標沿用現有設定，所以重跑是安全的。這台原本是 static 的話，記得把
 `--static` 一起帶上，否則會變回完整功能。
 
-edge 那台是另一回事（`edge set` 是取代，每個網域要重打完整指令，
-**漏掉 `--password-hash` 會把那個網域的密碼清掉**），但那是 edge 上的人的事，
-不是你的。
-
-**`node init` 不碰 `actions\` 也不碰 `actiond\`**，所以只重跑它，那兩塊還是舊的：
+**但只跑 `node init` 是不夠的。** 它只管 `Caddyfile` 和 `conf\` —— 不碰
+`actions\` 也不碰 `actiond\server.mjs`，那兩塊會安靜地繼續跑舊版。要更新那些
+得再跑一次 `install.ps1`，而**那要管理員，你不是**：
 
 ```powershell
-# 產品附的 action 有更新 —— 不用重啟，也不用管理員
-Copy-Item <caddy-outposts>\templates\actions\* C:\Caddy\actions\ -Force
-
-# actiond 本身換版 —— 這一個要管理員重啟
-Copy-Item <caddy-outposts>\src\actiond\server.mjs C:\Caddy\actiond\server.mjs -Force
-Restart-Service actiond
+# 請使用者用系統管理員 PowerShell 執行
+<caddy-outposts>\src\install.ps1
 ```
 
-複製 `templates\actions\*` 不會動到使用者自己寫的 action：檔名不同就不在範圍內。
+它會重新複製 `actions\`、`actiond\`、`apps\`，重設 ACL、防火牆、使用者身分橋接，
+並重裝兩個服務（等於重啟，有幾秒中斷）。使用者自己寫的 action 不會被動到。
+
+edge 那台又是另一回事（`edge set` 是取代，每個網域要重打完整指令，
+**漏掉 `--password-hash` 會把那個網域的密碼清掉**），但那是 edge 上的人的事，
+不是你的。
 
 ---
 
