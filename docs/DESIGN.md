@@ -556,12 +556,41 @@ session 裡執行的排程工作**，Windows 會給它一個 console —— 每�
 > 分開的 stderr、stdin、環境變數、離開碼。舊的單插槽協定一樣都載不了。
 > 協定寫在 `templates\actiond\bridge-runner.ps1` 的檔頭。
 >
-> **偵測「有沒有人登入」用 `quser`**（18ms），比對的是橋那個帳號的名字 ——
-> 問的不是「主控台現在是誰」（切換使用者之後原本的 session 還在，橋照樣跑得動）。
-> 兩個實測淘汰掉的做法：`WTSGetActiveConsoleSessionId` 登出後回 `2` 而不是
-> `0xFFFFFFFF`（登入畫面自己也佔一個 session），以及「丟了工作再看
+> **偵測「有沒有人登入」問的是登錄 hive**：互動式登入的時候 Windows 把那個人的
+> hive 掛進 `HKEY_USERS\<SID>`，登出就卸載，所以 `reg query HKU`（12ms）列出來的
+> `S-1-5-21-*` 就是現在登入中的人。拿到的是 SID，再去 HKLM 的 `ProfileList` 換成
+> profile 目錄名，跟橋那個帳號比對 —— 問的不是「主控台現在是誰」（切換使用者之後
+> 原本的 session 還在，橋照樣跑得動）。
+>
+> 兩個更早就實測淘汰的做法：`WTSGetActiveConsoleSessionId` 登出後回 `2` 而不是
+> 文件說的 `0xFFFFFFFF`（登入畫面自己也佔一個 session），以及「丟了工作再看
 > `Start-ScheduledTask` 成不成功」—— **沒有人登入時它照樣回報成功**，工作只是
 > 安靜地沒有跑。所以前置偵測是必要的，不是最佳化。
+
+> **2026-09-14：原本用的 `quser` 在 Windows 家庭版不存在。** pc-b 是家庭版，
+> 那台每按一支 action 都回「bob 尚未登入，這個結果可能不完整」，但 bob 一直登入
+> 著。`quser.exe` 和 `qwinsta.exe` 在那台都不在（同一個 RDS 元件，專業版才附），
+> 於是 `execSync` 丟 ENOENT、`e.stdout` 是空的，偵測一口咬定沒有人登入。
+> **失敗是安靜的** —— action 照跑，只是整台機器都退回服務帳號執行。
+>
+> 十一種問法在 pc-b 上以 `LocalService` 身分、登入中與登出各測一遍：
+>
+> | 問法 | 登入中 | 登出 | |
+> |---|---|---|---|
+> | `reg query HKU` | SID | 空 | ✅ 12ms，選這個 |
+> | `Win32_UserProfile` 的 `Loaded` | bob | 空 | 可用，34ms，要走 CIM |
+> | WTS API `WTSEnumerateSessions` | bob | 空 | 可用，93ms，Node 沒有 FFI，得開 PowerShell 才叫得到 |
+> | `quser` / `qwinsta` | 不存在 | 不存在 | ❌ 家庭版沒有 |
+> | `HKEY_USERS` 用 .NET 列舉 | 空 | 空 | ❌ 服務身分列不出來，`reg.exe` 問同一件事卻拿得到 |
+> | `HKU\<SID>\Volatile Environment` | SecurityException | 空 | ❌ 服務讀不進別人的 hive |
+> | `NTUSER.DAT` 是不是被鎖住 | 看不到那個檔 | 看不到那個檔 | ❌ |
+> | `Win32_LogonSession` + `Win32_LoggedOnUser` | 空 | 空 | ❌ 服務查不到 |
+> | `explorer.exe` 的 owner | `GetOwner rc=2` | 空 | ❌ 權限不足 |
+>
+> **這張表只有用 actiond 真正的身分測才算數。** 同一支探測腳本用 `bob` 自己的
+> 帳號跑，下半部那五個全是 ✅ —— 照那個結論選，會選到一個在服務裡永遠回答
+> 「沒有人」的做法。actiond 降權到 `LocalService` 之後，「我跑得動」不再等於
+> 「actiond 跑得動」，凡是牽涉權限的偵測都要用服務身分重測一次。
 
 **開視窗那一步沒有這個選擇。** 服務跑在 Windows session 0，那裡開的視窗使用者在
 桌面上看不到，所以「殺掉再 resume」非走橋不可，送出的時候還是會閃一下。那是一個

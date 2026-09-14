@@ -24,7 +24,7 @@
 //            ACTION_DRAIN_MS
 // =============================================================================
 import http from 'node:http';
-import { spawn, spawnSync, execSync } from 'node:child_process';
+import { spawn, spawnSync, execSync, execFileSync } from 'node:child_process';
 import { readdir, readFile, writeFile, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -83,41 +83,77 @@ const BRIDGE_DIR  = process.env.BRIDGE_DIR || path.join(CADDY_DIR, 'actiond', 'b
 // 登出的路上 —— 退回直接執行比卡住好。
 const BRIDGE_WAIT = Number(process.env.BRIDGE_WAIT_MS || 15000);
 
-// quser 問一次約 18ms，但一個頁面可能連續問好幾次，所以短暫快取。
+// reg 問一次約 12ms，但一個頁面可能連續問好幾次，所以短暫快取。
 // 快取太久會在使用者剛登出時把工作往一個不存在的 session 丟（那會靜靜地逾時）。
 let loginCache = { at: 0, value: false };
 const LOGIN_CACHE_MS = 2000;
 
+// 一支 SID 對到哪個 profile 目錄不會變，所以查過就記住。
+const sidProfiles = new Map();
+
+const REG_EXE = (process.env.SystemRoot || 'C:\\Windows') + '\\System32\\reg.exe';
+const PROFILE_LIST = 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList';
+
+function regQuery(args) {
+  try {
+    return decodeOutput(execFileSync(REG_EXE, args,
+      { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch (e) {
+    // 機碼不存在的時候離開碼是非零，訊息在 stdout 上
+    return e && e.stdout ? decodeOutput(e.stdout) : '';
+  }
+}
+
 // 「那個使用者的 session 還在不在」——問的不是「有沒有人登入」。
 //
-// 用 quser，而且只比對使用者名稱那一欄：橋是綁在特定帳號上的排程工作，所以
-// 「主控台現在是誰」不是我們要的問題（切換使用者之後原本的 session 還在，橋照樣
-// 跑得動）。狀態欄是在地化字串，不解析。
+// 問法是「他的登錄 hive 還掛著嗎」：互動式登入的時候 Windows 把那個人的 hive 掛進
+// HKEY_USERS\<SID>，登出就卸載。橋是綁在特定帳號上的排程工作，所以「主控台現在是
+// 誰」不是我們要的問題 —— 切換使用者之後原本的 session 還在，橋照樣跑得動。
 //
-// 實測淘汰掉的兩個做法，不要再拿回來用：
-//   * WTSGetActiveConsoleSessionId：登出之後回的是 2，不是文件說的 0xFFFFFFFF
-//     （登入畫面本身也佔一個 session），所以它根本分不出有沒有人登入。
-//   * 「先丟工作再看 Start-ScheduledTask 成不成功」：**沒有人登入時它照樣回報
-//     成功**（實測 108ms、不報錯），工作只是安靜地沒有跑。所以前置偵測是必要的，
-//     不是最佳化。
+// **不要換回 quser**：Windows 家庭版根本沒有那支程式（qwinsta 也沒有，同一個 RDS
+// 元件）。少了它，execSync 丟 ENOENT、stdout 是空的，於是偵測一口咬定沒有人登入，
+// 那台機器的每一支 action 都退回服務帳號執行 —— 而且是安靜地退，只有輸出末尾那句
+// 「尚未登入」會透露。pc-b 整整踩過一輪。reg.exe 每一版 Windows 都有。
+//
+// 前置偵測是必要的，不是最佳化：**沒有人登入時 Start-ScheduledTask 照樣回報成功**
+// （實測 108ms、不報錯），工作只是安靜地沒有跑，所以事後看結果是問不出來的。
+//
+// 其他實測淘汰掉的做法見 DESIGN.md。共通點是它們都必須用 actiond 真正的身分
+// （LocalService）去測才算數 —— 拿自己的帳號測會得到相反的結論。
 function userLoggedOn() {
   if (!BRIDGE_USER) return false;
   const now = Date.now();
   if (now - loginCache.at < LOGIN_CACHE_MS) return loginCache.value;
-  let out = '';
-  try {
-    out = decodeOutput(execSync('quser', { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }));
-  } catch (e) {
-    // 一個 session 都沒有的時候 quser 的離開碼是非零，訊息在 stdout 上
-    out = e && e.stdout ? decodeOutput(e.stdout) : '';
-  }
   const want = BRIDGE_USER.toLowerCase();
-  const found = out.split(/\r?\n/).slice(1).some(line => {
-    const first = line.trim().replace(/^>/, '').split(/\s+/)[0];
-    return first && first.toLowerCase() === want;
+  const found = mountedHives().some(sid => {
+    const leaf = profileLeaf(sid);
+    // 改過名的帳號，profile 目錄可能留著 bob.pc-b 或 bob.000 這種尾巴
+    return leaf === want || leaf.startsWith(want + '.');
   });
   loginCache = { at: now, value: found };
   return found;
+}
+
+// 現在掛在 HKEY_USERS 底下的使用者 hive。S-1-5-21 開頭的才是真人帳號（服務帳號是
+// S-1-5-18/19/20），而每個 hive 旁邊還有一個 <SID>_Classes 要濾掉。
+function mountedHives() {
+  return regQuery(['query', 'HKU']).split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => /\\S-1-5-21-[\d-]+$/.test(l))
+    .map(l => l.split('\\').pop());
+}
+
+// SID -> profile 目錄的名字。讀的是 HKLM 底下的 ProfileList，不是那個人自己的
+// hive —— 服務進得去前者、進不去後者（讀 HKU\<SID>\Volatile Environment 拿到的是
+// SecurityException，實測）。所以這裡只能拿到目錄名，拿不到帳號名。
+function profileLeaf(sid) {
+  if (sidProfiles.has(sid)) return sidProfiles.get(sid);
+  const out = regQuery(['query', PROFILE_LIST + '\\' + sid, '/v', 'ProfileImagePath']);
+  // 路徑可能有空白（C:\Users\John Smith），所以不能照空白切最後一段
+  const m = /ProfileImagePath\s+REG_\w+\s+(.+?)\s*$/mi.exec(out);
+  const leaf = m ? m[1].split(/[\\/]/).pop().toLowerCase() : '';
+  sidProfiles.set(sid, leaf);
+  return leaf;
 }
 
 const ip2int = ip => ip.split('.').reduce((a, o) => (a << 8 >>> 0) + (+o), 0) >>> 0;
@@ -574,6 +610,9 @@ server.listen(PORT, HOST, () => {
   if (BRIDGE_USER) {
     console.log('  使用者身分橋接：' + BRIDGE_USER + ' 透過排程工作 ' + BRIDGE_TASK +
                 '（' + BRIDGE_DIR + '）');
+    // 偵測要是壞了，它會安靜地把每一支 action 都退回服務帳號執行，所以啟動時先講
+    // 一次現在看到什麼 —— 這一行對不對，開機當下就能發現。
+    console.log('  登入偵測：' + (userLoggedOn() ? BRIDGE_USER + ' 登入中' : '目前沒有人登入'));
   } else {
     console.log('  沒有設定 BRIDGE_USER —— 每個 action 都以服務帳號執行');
   }
