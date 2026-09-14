@@ -325,9 +325,8 @@ node <caddy-outposts>\src\caddyctl.mjs node init --reload
 它會重新複製 `actions\`、`actiond\`、`apps\`，重設 ACL、防火牆、使用者身分橋接，
 並重裝兩個服務（等於重啟，有幾秒中斷）。使用者自己寫的 action 不會被動到。
 
-edge 那台又是另一回事（`edge set` 是取代，每個網域要重打完整指令，
-**漏掉 `--password-hash` 會把那個網域的密碼清掉**），但那是 edge 上的人的事，
-不是你的。
+edge 那台的第一步是 `edge init`（一樣不用帶參數 —— 它會照 manifest 把每一個網域
+重新產生一次，密碼原樣保留），但那是 edge 上的人的事，不是你的。
 
 ---
 

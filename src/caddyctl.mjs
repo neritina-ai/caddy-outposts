@@ -3,7 +3,7 @@
 //  caddyctl —— 一次設定一台機器，或一個網域
 //
 //    node src/caddyctl.mjs node init
-//    node src/caddyctl.mjs edge init  --token <duckdns token>
+//    node src/caddyctl.mjs edge init  --token <duckdns token>   （更新時不必帶）
 //    node src/caddyctl.mjs edge set   --name myfiles --ip 10.0.0.2 --password alice:秘密
 //    node src/caddyctl.mjs edge set   --name mysite
 //    node src/caddyctl.mjs edge set   --name mysite --content C:\Web
@@ -489,13 +489,60 @@ async function cmdEdgeInit(f) {
   writeSkeleton(dir);
   ensureDir(sitesDir(dir));
   rewriteGlobal(dir, state, token);
+
+  // 每一個網域都重新產生一次。**這是 edge 的更新入口，對應 node 的 node init。**
+  //
+  // sites\*.caddy 是快照：render.mjs 改了之後它們不會自己跟著變，舊的行為會安靜地
+  // 繼續跑（真的發生過 —— 兩個網域的授權規則過期了好幾個星期沒人發現，直到有人
+  // 問「/ 不是應該免密碼嗎」）。而要使用者重打一次 edge set 等於要他回想當初設了
+  // 什麼，那不是更新流程。所以這裡自己把參數湊回來：
+  //
+  //   manifest 記得住的   mode、target、content、有哪些帳號
+  //   manifest 不記的     密碼雜湊、記住登入的祕密、hold 的訊息 —— 從舊檔撈回來
+  //
+  // 沒有網域的機器（剛 init 完）這個迴圈不會跑，所以第一次執行的行為沒變。
+  const regenerated = [];
+  for (const [label, d] of Object.entries(state.edge.domains || {})) {
+    const def = { mode: d.mode, target: d.target, content: d.content };
+    if (d.mode === 'hold') {
+      const msg = readHoldMessage(dir, label);
+      if (msg) def.message = msg;
+    }
+    const want = d.auth || [];
+    if (want.length) {
+      const users = readUsers(dir, label);
+      // 撈不到雜湊就停，**不要產生一個沒有密碼的網域** —— 那等於把 /_/ 底下可寫入
+      // 的 WebDAV 和會執行腳本的 /_/run 開到網際網路上。寧可整個指令失敗，
+      // 也不要安靜地拆掉一道門。
+      const missing = want.filter((u) => !users[u]);
+      if (missing.length) {
+        die('重新產生 ' + fqdn(label) + ' 失敗：manifest 說它的密碼帳號是 '
+          + want.join('、') + '，但 ' + sitePath(dir, label)
+          + ' 裡找不到 ' + missing.join('、') + ' 的雜湊。\n\n'
+          + '  沒有密碼的網域整段不路由 /_/*，所以這裡不猜，什麼都沒有改。\n'
+          + '  那個檔被手動編輯過的話，單獨重設這一個網域：\n'
+          + '    caddyctl edge set --name ' + label + ' … --password [帳號:]<密碼>');
+      }
+      def.users = users;
+      def.remember = readRemember(dir, label) || newRemember();
+    }
+    writeText(sitePath(dir, label), renderEdgeSite(label, def));
+    regenerated.push(label);
+  }
+
   saveState(dir, state);
 
   console.log('edge 設定好了 -> ' + dir);
+  if (regenerated.length) {
+    console.log('  重新產生了 ' + regenerated.length + ' 個網域：' + regenerated.join('、'));
+  }
   // 加網域的說明只有在「已經裝好、可以馬上做」的時候才印。
   // 還沒裝服務的機器下一步是 install.ps1 —— 這時候丟一大段 edge set 出來，
   // 讀的人會以為那才是下一步（實際踩到過）。
-  if (isInstalled()) edgeAddHelp();
+  //
+  // 已經有網域的機器也不印：那是更新，不是第一次設定，使用者要看的是剛才
+  // 重新產生了哪幾個，不是怎麼再加一個。
+  if (isInstalled() && !regenerated.length) edgeAddHelp();
   await after(dir, state, f);
 }
 
@@ -537,6 +584,32 @@ function readRemember(dir, label) {
 
 // 32 bytes 的 CSPRNG，寫成 hex —— cookie 值和 Caddyfile 字串都不必跳脫。
 const newRemember = () => randomBytes(32).toString('hex');
+
+// 產生出來的 site 檔裡的「帳號 -> 雜湊」。
+//
+// `edge init` 重新產生網域時要靠它：**manifest 只記帳號名，不記雜湊**（那個檔是
+// 給機器上的 AI 讀的，見 cmdEdgeSet 裡的說明），所以雜湊只存在這個 .caddy 檔裡。
+// 撈回來是為了原樣寫回去 —— 跟 readToken / readRemember 同一個模式，一樣絕不印出來。
+//
+// 縮排不固定：serve 模式的 basic_auth 在站台第一層（一個 tab），proxy 模式包在
+// handle > route 裡（三個），所以只認「若干個 tab + 帳號 + bcrypt」。
+function readUsers(dir, label) {
+  const p = sitePath(dir, label);
+  if (!existsSync(p)) return {};
+  const users = {};
+  const re = /^\t+(\S+) (\$2[abxy]?\$\d{2}\$[./A-Za-z0-9]{53})[ \t]*$/gm;
+  for (const m of readFileSync(p, 'utf8').matchAll(re)) users[m[1]] = m[2];
+  return users;
+}
+
+// hold 網域的自訂訊息。manifest 沒有這個欄位，所以跟雜湊一樣從檔案撈回來 ——
+// 撈不到就是沒設過，renderEdgeSite 會用預設句子。
+function readHoldMessage(dir, label) {
+  const p = sitePath(dir, label);
+  if (!existsSync(p)) return null;
+  const m = /^\trespond "(.*)" 503$/m.exec(readFileSync(p, 'utf8'));
+  return m ? m[1] : null;
+}
 
 async function cmdEdgeSet(f) {
   const dir = resolve(f.dir ? String(f.dir) : win(CADDY_DIR));
@@ -940,7 +1013,10 @@ const USAGE = `caddyctl —— 一次設定一台機器，或一個網域
 
     通常什麼都不用給。再跑一次是安全的：沒寫的旗標沿用現有設定。
 
-  node src/caddyctl.mjs edge init --token <duckdns token>
+  node src/caddyctl.mjs edge init [--token <duckdns token>]
+      第一次要給 token。**之後什麼都不用給**：token 從現有設定讀回來，
+      每一個網域也照 manifest 重新產生一次 —— 更新完就跑這個，
+      不必回想當初每個網域是怎麼設的。密碼和「記住登入」都原樣保留。
 
   node src/caddyctl.mjs edge set --name <label> [模式]
       （不給）                  這台自己服務靜態內容，目錄預設

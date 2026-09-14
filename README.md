@@ -497,30 +497,24 @@ node src\caddyctl.mjs node init --reload
 `node init` 沒帶的旗標會沿用現有設定，所以重跑是安全的。唯一的例外是
 `--static` —— 它是宣告式的，原本是 static 的機器要記得把 `--static` 一起帶上。
 
-### edge 那台的第 1 步不一樣
+### edge 那台的第 1 步是 `edge init`
 
 ```powershell
-node src\caddyctl.mjs list                      # 先看現在是什麼設定
-node src\caddyctl.mjs edge set --name <label> ... --reload
+node src\caddyctl.mjs edge init --reload
 ```
 
-**`edge set` 是整份取代，不是合併 —— 沒帶到的旗標不會沿用，會被清掉。**
-少了 `--password` / `--password-hash`，那個網域就變成沒有密碼，而沒有密碼的網域
-**整段不路由 `/_*`**（那台機器從網際網路上消失）。現有的雜湊在
-`conf\sites\<label>.caddy` 裡撈得到，連同帳號一起：
+**一樣什麼都不用帶** —— `--token` 只有第一次設定需要，之後它會從現有的
+`global.caddy` 讀回來，並照 manifest 把每一個網域重新產生一次。
 
-```powershell
-$site = "C:\Caddy\conf\sites\<label>.caddy"
-$m = [regex]::Match((Get-Content $site -Raw), '(?m)^\s+(\S+)\s+(\$2[abxy]?\$\d{2}\$\S{53})\s*$')
-node src\caddyctl.mjs edge set --name <label> --ip <位址> `
-    --password-hash "$($m.Groups[1].Value):$($m.Groups[2].Value)" --reload
-```
+manifest 裡沒有的東西（密碼雜湊、記住登入用的 cookie 祕密、`--hold` 的自訂訊息）
+會從舊的 `conf\sites\<label>.caddy` 撈回來原樣寫回去，所以**密碼不變，已經登入的
+手機也不會被踢出去**。你不必回想當初每個網域是怎麼設的。
 
-不要手貼那串雜湊：PowerShell 會把 `$2a$14$` 當成變數展開，貼進去的是一個殘缺的
-字串，而 `--password-hash` 會擋下來說它不是 bcrypt。
+某個網域的雜湊撈不到（那個檔被手動編輯過），它會**整個停下來**，並指名是哪個網域、
+少了哪個帳號。沒有密碼的網域整段不路由 `/_*`，所以它不猜 —— 那種情況用
+`edge set` 把那一個網域單獨重設就好。
 
-記住登入用的 cookie 祕密會自動沿用，所以已經登入的手機不會被踢出去。
-`conf\auth\` 的路徑密碼和 `apps\` 的 drop-in 也不受影響。
+`conf\auth\` 的路徑密碼和 `apps\` 的 drop-in 都不受影響。
 
 ### 更新完看一行
 
