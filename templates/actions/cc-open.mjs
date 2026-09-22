@@ -481,7 +481,7 @@ function pickerBody(root, list, sessionList, lead) {
         'autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">' +
       '<span class="d">會建在 ' + esc(root) + ' 底下。英文字母、數字、「.」「-」「_」。</span>' +
       '<label class="chk"><input type="checkbox" name="genesis" value="1">' +
-      '<span>同時建立空的 <code>genesis/</code> 子目錄</span></label>' +
+      '<span>同時建立 <code>genesis/FIATLUX.md</code></span></label>' +
     '</div>' +
     '<button>建立並開一個 session</button></form>';
 
@@ -586,7 +586,8 @@ if (mode === 'new' && hit) {
     '<input type="hidden" name="name" value="' + esc(hit.name) + '">' +
     (genesis ? '<input type="hidden" name="genesis" value="1">' : '') +
     '<button>好，連到現有的 ' + esc(hit.name) + '</button></form>' +
-    (genesis ? '<div class="note">裡面沒有 <code>genesis/</code> 的話會一併建起來。</div>' : '') +
+    (genesis ? '<div class="note">裡面沒有 <code>genesis/FIATLUX.md</code> 的話會一併建起來；' +
+      '已經有了就不動它。</div>' : '') +
     barLine('<span>或回上一頁改一個名字</span>')));
   process.exit(0);
 }
@@ -611,9 +612,13 @@ try {
   if (genesis) {
     const g = path.join(dir, 'genesis');
     if (!existsSync(g)) { mkdirSync(g); made.push(g); }
+    // A fresh FIATLUX.md is just the project name as its title. 'wx' so an
+    // existing one -- which by then holds real writing -- is never replaced.
+    const f = path.join(g, 'FIATLUX.md');
+    if (!existsSync(f)) { writeFileSync(f, '# ' + project + '\n', { flag: 'wx' }); made.push(f); }
   }
 } catch (e) {
-  process.stdout.write(errPage('建立目錄失敗，沒有開 session。', e.message));
+  process.stdout.write(errPage('建立目錄或檔案失敗，沒有開 session。', e.message));
   process.exit(0);
 }
 
