@@ -52,6 +52,10 @@ const SELF   = process.env.ACTION_SELF || '/_/run/cc-open';
 const METHOD = (process.env.ACTION_METHOD || 'GET').toUpperCase();
 const QUERY  = new URLSearchParams(process.env.ACTION_QUERY || '');
 
+// The action panel is this page's URL minus its last segment. Not a relative
+// "..": from /_/run/cc-open that climbs out of /_/run/ and lands on /_/.
+const PANEL  = SELF.replace(/\/[^/]*$/, '') || '/';
+
 // =============================================================================
 //  Where the projects live
 // =============================================================================
@@ -427,7 +431,7 @@ const ago = ms => {
 
 const TOP = '<h1>新的 session</h1>';
 const barLine = extra =>
-  '<div class="bar"><a href="..">← 所有 action</a>' + (extra || '') + '</div>';
+  '<div class="bar"><a href="' + esc(PANEL) + '">← 所有 action</a>' + (extra || '') + '</div>';
 
 const NOTE =
   '<div class="note">挑一個專案（或建一個新的），這台機器就在那個目錄開一個 Claude Code，' +

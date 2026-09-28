@@ -169,6 +169,10 @@ if (collectAt >= 0) {
 const SELF   = process.env.ACTION_SELF || '/_/run/cc-rc';
 const METHOD = (process.env.ACTION_METHOD || 'GET').toUpperCase();
 
+// action 面板 = 這一頁的網址去掉最後一段。不能寫成相對的 ".."：那是從
+// /_/run/cc-rc 所在的目錄 /_/run/ 再往上一層，會跑到 /_/ 控制面板去。
+const PANEL  = SELF.replace(/\/[^/]*$/, '') || '/';
+
 // 跑一段 PowerShell。**不經過任何橋** —— 這支程式已經是以使用者的身分在跑了。
 //
 // 指令和輸出都走檔案，不走管線：PowerShell 5.1 的 stdout 在被導向時是用系統
@@ -379,7 +383,7 @@ if (METHOD !== 'POST') {
   const { list, error } = sessions();
   if (error) { process.stdout.write(errPage('列不出 session。', error)); process.exit(0); }
   const body = '<h1>Remote Control</h1>' +
-    '<div class="bar"><a href="..">← 所有 action</a><span>' + list.length + ' 個 session</span></div>' +
+    '<div class="bar"><a href="' + esc(PANEL) + '">← 所有 action</a><span>' + list.length + ' 個 session</span></div>' +
     (list.length ? listBody(list, NOTE)
                  : '<div class="note">這台機器上沒有正在跑的 Claude Code session。</div>');
   process.stdout.write(page('Remote Control', body));
