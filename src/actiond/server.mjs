@@ -113,7 +113,7 @@ function regQuery(args) {
 // **不要換回 quser**：Windows 家庭版根本沒有那支程式（qwinsta 也沒有，同一個 RDS
 // 元件）。少了它，execSync 丟 ENOENT、stdout 是空的，於是偵測一口咬定沒有人登入，
 // 那台機器的每一支 action 都退回服務帳號執行 —— 而且是安靜地退，只有輸出末尾那句
-// 「尚未登入」會透露。pc-b 整整踩過一輪。reg.exe 每一版 Windows 都有。
+// 「尚未登入」會透露。reg.exe 每一版 Windows 都有。
 //
 // 前置偵測是必要的，不是最佳化：**沒有人登入時 Start-ScheduledTask 照樣回報成功**
 // （實測 108ms、不報錯），工作只是安靜地沒有跑，所以事後看結果是問不出來的。
@@ -127,7 +127,7 @@ function userLoggedOn() {
   const want = BRIDGE_USER.toLowerCase();
   const found = mountedHives().some(sid => {
     const leaf = profileLeaf(sid);
-    // 改過名的帳號，profile 目錄可能留著 bob.pc-b 或 bob.000 這種尾巴
+    // 改過名的帳號，profile 目錄可能留著 alice.MYPC 或 alice.000 這種尾巴
     return leaf === want || leaf.startsWith(want + '.');
   });
   loginCache = { at: now, value: found };

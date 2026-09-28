@@ -424,8 +424,8 @@ const trustKey = dir => dir.split('\\').join('/').replace(/\/+$/, '');
 const stored = k => String(k).replace(/\/+$/, '').toLowerCase();
 
 // **那個目錄自己那一筆說了算。** 繼承只補「完全沒有記錄」的目錄：明確的 `false`
-// **不會**被上層的 `true` 蓋過去（2026-09-14 在 pc-b 實測：`D:/projects` 是
-// true、`D:/projects/myproj` 是 false，session 照樣停在對話框上）。把上層
+// **不會**被上層的 `true` 蓋過去（實測：`D:/projects` 是 true、
+// `D:/projects/myproj` 是 false，session 照樣停在對話框上）。把上層
 // 當成足夠，剛好就是「跳過那一次唯一有用的寫入」的情況 —— 而這也是它一直沒被
 // 發現的原因：當初寫這段的那台機器上沒有任何一筆 false 可以踩到。
 function coveredByTrust(projects, dir) {

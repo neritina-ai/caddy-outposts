@@ -172,9 +172,8 @@ const stored = k => String(k).replace(/\/+$/, '').toLowerCase();
 
 // **The directory's own entry wins.** Inheritance only fills in for directories
 // that have no entry at all: an explicit `false` is NOT overridden by a trusted
-// parent (measured on pc-b 2026-09-14 -- "D:/projects" true,
-// "D:/projects/myproj" false, and the session still stopped on the
-// dialog). Treating the parent as sufficient there is exactly the case where we
+// parent (measured: "D:/projects" true, "D:/projects/myproj" false, and the
+// session still stopped on the dialog). Treating the parent as sufficient there is exactly the case where we
 // skip the one write that would have helped, which is how this went unnoticed:
 // the machine where it was first written had no `false` entries to trip over.
 function coveredByTrust(projects, dir) {

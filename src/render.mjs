@@ -174,7 +174,7 @@ export const rememberSetCookie = (secret) =>
 // 掛上 ResponseWriter，然後把 Set-Cookie 加到 basic_auth 吐出的 **401** 上面 ——
 // 等於把祕密送給任何一個亂試密碼的人，一次就拿到通行證。
 //
-// 實測確認過：不包 route 時 `curl -u alice:WRONG` 拿到的是
+// 實測確認過：不包 route 時 `curl -u admin:WRONG` 拿到的是
 //     HTTP/1.1 401 Unauthorized
 //     Set-Cookie: sc_auth=<祕密>
 // 包進 route 之後 401 就乾淨了 —— route 保證照書寫順序執行，basic_auth 失敗
