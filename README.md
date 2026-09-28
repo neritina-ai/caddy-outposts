@@ -282,6 +282,7 @@ node src\caddyctl.mjs reload
 | `/_/run/<名稱>` | 執行某個 action | 要 |
 | `/_/run/cc-open` | 挑一個專案（或建一個新的），開一個帶 Remote Control 的 Claude Code | 要 |
 | `/_/run/cc-rc` | 幫這台上的 Claude Code session 開 Remote Control | 要 |
+| `/_/run/git-status` | 挑一個專案，看它 push 了沒有、remote 網址、最近五代的 commit | 要 |
 | `/_/p/`、`/_/w/` | `<槽>\projects`、`<槽>\workspaces` | 要 |
 | `/_/a/` | actions 資料夾 | 要 |
 
@@ -380,6 +381,22 @@ string 和表單 body 交給腳本，stdout 原樣當 HTML 送出去。一個檔
 - 開啟時給的 `--model`／`--effort`／`--add-dir` 不會跟著回來，輸入框裡沒送出的字也是
 - 頁面上看不出哪些已經有 Remote Control（沒有指令問得到）。用手機上看不看得到
   來判斷就好，勾到已經有的也不會怎麼樣，就是斷線重連
+
+### 看某個專案 push 了沒有
+
+打開 `/_/run/git-status`，從 `<槽>\projects` 的清單裡點一個專案：
+
+1. **git status** —— 有幾個 commit 還沒 push、remote 上是不是有這裡沒有的，
+   以及還沒 commit 的檔案
+2. **remote 網址** —— 點下去就是 GitHub 上那個 repo；旁邊的 `commits` 直接開到
+   那個分支的 commit 清單
+3. **最近五代的 commit 樹**，最新的在最上面。只存在一邊的 commit 會標
+   「還沒 push」或「只在 origin/main」；底下會寫更早還有幾個 commit，
+   或是「沒有更早的了」
+
+「還沒 push」算的是這台機器上次跟 remote 連線時看到的樣子，頁面會寫那是多久以前。
+要知道 GitHub **現在**的樣子，按「向 remote 確認一次（git fetch）」—— 它只更新
+`origin/main` 這類遠端分支的紀錄，不會動你的工作目錄和本地分支。
 
 ### 套用設定變更
 
@@ -616,6 +633,6 @@ Get-Service caddy, actiond       # 看狀態
 
 ## 這份程式是怎麼寫出來的
 
-由人設計、決定取捨並驗收，程式與文件用 **Claude Opus 5**（Claude Code）寫成。
+由人設計、決定取捨並驗收，程式與文件用 **Claude Opus 5 與 Opus 5.5**（Claude Code）寫成。
 上線前做過一次完整的驗收：兩台 Windows 機器從空機裝起，edge 與 node 各一台，
 一路測到公網 HTTPS、憑證簽發、WebDAV 讀寫與遠端執行 action。

@@ -524,6 +524,43 @@ pid 拿掉了。使用者不需要它，而且它在畫面上唯一的作用是�
 視窗為什麼不是用 `-WindowStyle Minimized` 開的、而是開完再縮：見
 [Windows 的坑](#7-windows-的坑都是實際踩到的)。
 
+### `git-status`：看的時候不連線，要連線自己按
+
+`/_/run/git-status` 回答「這個專案跟 GitHub 誰比較新」。`git status` 的
+「ahead 2, behind 0」是跟 `origin/main` 這個**遠端追蹤分支**比的，而它只在這個
+repo fetch 或 push 的時候才會動 —— 所以那個答案只跟上一次連線一樣新。頁面把
+「上一次」寫出來：`FETCH_HEAD` 的時間和那個遠端分支 reflog 的最後一筆，取比較晚
+的那個（push 會動遠端分支，但不寫 `FETCH_HEAD`）。
+
+**fetch 是一顆 POST 按鈕，不是每次打開都做。** 它要網路、要使用者的憑證、會寫進
+`.git`；看是唯讀而且要快（整頁 0.5 秒上下）。兩個跟橋有關的限制：
+
+* **整頁要在橋的等待時間內跑完。** actiond 對一支走橋的 action 只等
+  `BRIDGE_WAIT_MS`（預設 15 秒），所以 fetch 自己的時限是 10 秒。
+* **不准任何提示**（`GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`）。憑證過期
+  的時候，登入視窗會開在一張沒有人在看的桌面上，頁面就卡到橋放棄為止。沒有提示的
+  話 fetch 直接失敗，錯誤訊息原樣顯示。
+
+**為什麼標 `@only-when-logged-on`**：git 讀的是使用者的 `~/.gitconfig`，服務帳號
+底下沒有這個檔，而答案會**安靜地不一樣** —— `core.autocrlf` 不同會讓每個檔案都
+顯示成有修改，使用者擁有的 repo 會被當成 dubious ownership 拒絕。
+
+**每一個 git 指令都帶 `--no-optional-locks`。** 那個專案裡可能正有一個 Claude Code
+session 在 commit，而一般的 `git status` 會順手拿 `index.lock` 去更新 index。
+這一頁只是在看，不該是搶到那把鎖的人。
+
+**比較的對象**：有 upstream 就用 upstream；沒有的話，`origin/<同名分支>` 存在就拿
+它比 —— 沒加 `-u` 就 push 的分支沒有 upstream，但它確實在 GitHub 上。
+
+**樹是 git 自己畫的**（`git log --graph`，HEAD 加上比較對象），頁面只負責把字元
+換成線。格式故意是兩行（雜湊一行、標題一行）：這樣 git 會替第二行補上接續的
+`|`，標題再長圖都不會斷。每個字元一格：`|` 是整列高的直線（標題在手機上換行時
+線跟著延長）、`/` `\` 從一條線的中心畫到隔壁那條的中心（git 的線相隔兩欄）、
+`*` 是圓點並接上它上下的線。底下那行「更早還有 N 個」是 HEAD 和比較對象的歷史
+聯集（`git rev-list --count`）減掉畫出來的那幾個。
+
+remote 網址裡的帳密（`https://user:token@github.com/...`）在上頁面之前就拿掉了。
+
 ### 橋接是預設路，不是退路
 
 第一版每一件事都走使用者身分的橋，理由是「actiond 可能是 LOCAL SYSTEM，那個身分
