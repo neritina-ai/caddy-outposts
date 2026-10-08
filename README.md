@@ -477,25 +477,21 @@ https://myfiles.duckdns.org/_/w/
 
 ## 更新 caddy-outposts
 
-`git pull` 之後，每台兩步：
+`git pull` 之後，每台一行，**普通 PowerShell**（不用系統管理員）：
 
 ```powershell
-# 1. 重新產生設定（普通視窗）—— node 用上面那行，edge 用下面那行
-node src\caddyctl.mjs node init --reload
-node src\caddyctl.mjs edge init --reload
-
-# 2. 其餘全部（系統管理員）
-.\src\install.ps1
+node src\caddyctl.mjs update
 ```
 
-**兩步都要做，而且都不用帶參數** —— 現有設定會沿用，包括 edge 每個網域的密碼。
-只做第 1 步的話，`actions\` 和 `actiond\` 會安靜地繼續跑舊版。
+它會照現有設定重寫 `conf\`（edge 每個網域的密碼、static 這些都原樣保留，不用帶參數）、
+把 `actions\` `actiond\` `apps\` 換成新版、裝 `/caddy` 技能，然後套用。
+actiond 換版時會自己重新啟動，中斷幾秒。
+
+只有一種情況要系統管理員：最後一段寫著「這次更新有一部分要系統管理員」。那是服務本身
+（帳號、防火牆、排程工作）變了，它會寫原因，照著用系統管理員跑一次 `.\src\install.ps1`。
 
 你的東西一個都不會動到：`<槽>\www`、`<槽>\projects`、`<槽>\workspaces`、
 你自己寫在 `actions\` 裡的腳本、`conf\auth\` 的路徑密碼、`apps\` 底下的 app 路由。
-
-第 2 步會重裝服務，所以有幾秒的中斷。跑完看一眼 `C:\Caddy\logs\actiond.log`
-最後一行是不是「登入偵測：<你的帳號> 登入中」。
 
 ---
 
@@ -588,11 +584,14 @@ Caddy 用的是記憶體裡的設定 —— 只有服務重啟才會吃到壞檔
 ## 指令速查
 
 ```powershell
-# 設定這台機器（普通視窗。更新時跑的也是這兩行的第一行）
+# 設定這台機器（普通視窗）
 node src\caddyctl.mjs node init [--drive E:] [--static] [--home <路徑>]
 node src\caddyctl.mjs edge init --token <duckdns token>
 
-# 裝服務（要管理員。git pull 之後再跑一次就是一次更新）
+# 更新（普通視窗，git pull 之後）
+node src\caddyctl.mjs update
+
+# 裝服務（要管理員。第一次安裝，或 update 說服務層變了的時候）
 .\src\install.ps1 [-SkipSkill] [-SystemAccount] [-ActiondUser .\<帳號>]
 
 # 網域

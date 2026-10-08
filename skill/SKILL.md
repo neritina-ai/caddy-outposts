@@ -301,32 +301,25 @@ node <caddy-outposts>\src\caddyctl.mjs reload
 完全不動作 —— 而且就算檔案已經寫壞，正在跑的 Caddy 用的是記憶體裡的舊設定，
 站台不會掛掉。所以寫壞是救得回來的。
 
-### 更新 caddy-outposts 之後要重跑一次
+### 更新 caddy-outposts
 
-`C:\Caddy\conf\` 底下是**產生出來的快照**。`git pull` 拿到新版之後那些檔案不會
-自己跟著變，也不會有任何錯誤訊息 —— 舊版的行為會安靜地繼續跑。更新完就重跑：
-
-```powershell
-node <caddy-outposts>\src\caddyctl.mjs node init --reload
-```
-
-沒帶的旗標沿用現有設定，所以重跑是安全的。這台原本是 static 的話，記得把
-`--static` 一起帶上，否則會變回完整功能。
-
-**但只跑 `node init` 是不夠的。** 它只管 `Caddyfile` 和 `conf\` —— 不碰
-`actions\` 也不碰 `actiond\server.mjs`，那兩塊會安靜地繼續跑舊版。要更新那些
-得再跑一次 `install.ps1`，而**那要管理員，你不是**：
+`C:\Caddy\` 底下的設定和 `actions\`、`actiond\`、`apps\` 都是從 repo 抄過來的
+**快照**。`git pull` 拿到新版之後它們不會自己跟著變，也不會有任何錯誤訊息 ——
+舊版的行為會安靜地繼續跑。更新是一行，**你自己就能跑，不用管理員**：
 
 ```powershell
-# 請使用者用系統管理員 PowerShell 執行
-<caddy-outposts>\src\install.ps1
+node <caddy-outposts>\src\caddyctl.mjs update
 ```
 
-它會重新複製 `actions\`、`actiond\`、`apps\`，重設 ACL、防火牆、使用者身分橋接，
-並重裝兩個服務（等於重啟，有幾秒中斷）。使用者自己寫的 action 不會被動到。
+它照現有設定重寫 `conf\`（static、`/c/` 這些形狀原樣保留，不必帶旗標）、換新產品的
+檔案、裝技能、套用。actiond 換版時會自己重新啟動。使用者自己寫的 action 不會被動到。
 
-edge 那台的第一步是 `edge init`（一樣不用帶參數 —— 它會照 manifest 把每一個網域
-重新產生一次，密碼原樣保留），但那是 edge 上的人的事，不是你的。
+只有最後出現「這次更新有一部分要系統管理員」時才需要人：把那段原因轉告使用者，
+請他用系統管理員 PowerShell 跑一次 `<caddy-outposts>\src\install.ps1`。在那之前，
+其餘的更新都已經生效了。
+
+edge 那台也是同一行（它會照 manifest 把每一個網域重新產生一次，密碼原樣保留），
+但那是 edge 上的人的事，不是你的。
 
 ---
 

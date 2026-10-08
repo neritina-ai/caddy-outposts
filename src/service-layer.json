@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "changes": {
+    "1": "第一版：caddy 與 actiond 兩個服務、防火牆規則、caddy-bridge 排程工作、C:\\Caddy 的寫入權"
+  }
+}

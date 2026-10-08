@@ -27,11 +27,12 @@
 //  --dir 預設 C:\Caddy。要幫「還沒安裝的機器」先備好設定，就指到一個暫存目錄，
 //  弄好之後整包複製過去。
 // =============================================================================
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync,
+         renameSync, statSync, cpSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { randomBytes, createHash } from 'node:crypto';
 import os from 'node:os';
 import {
   CADDY_DIR, DNS_PROVIDER, DNS_SUFFIX, fqdn, NODE_DEFAULTS, nodeLayout,
@@ -81,6 +82,7 @@ const CRED = ['password', 'password-hash'];
 const SPEC = {
   'list':        ['dir'],
   'reload':      ['dir'],
+  'update':      [],
   'node init':   [...MUTATING, 'drive', 'port', 'listen', 'machine', 'static', 'home', 'no-home'],
   'edge init':   [...MUTATING, 'token', 'machine'],
   'edge set':    [...MUTATING, ...CRED, 'name', 'ip', 'content', 'hold', 'message'],
@@ -270,7 +272,7 @@ function writeConfigIndex(dir, state, node) {
 // conf\ 底下的東西全是 caddyctl 的產物，這個不該是例外。放在 install.ps1 的話，
 // 更新它就要管理員 + 重跑安裝 —— 而 install.ps1 的設計是「一台機器一輩子只跑
 // 這一次」，之後所有變更都該能用 caddyctl 完成。放這裡，git pull 之後
-// node init --reload 就更新到了。
+// caddyctl update（或 node init）就更新到了。
 //
 // 一律覆蓋：它是產品的檔案。要改樣式就改 repo 裡的 templates\www\md.html。
 function writeMdTemplate(dir) {
@@ -406,6 +408,13 @@ function usersFrom(f, dir, label) {
 // ---------------------------------------------------------------- 指令
 async function cmdNodeInit(f) {
   const dir = resolve(f.dir ? String(f.dir) : win(CADDY_DIR));
+  const state = nodeInit(dir, f);
+  await after(dir, state, f);
+}
+
+// node init 的本體。拆出來是給 update 用的：它要的是「照現有設定重寫一次」，
+// 不是最後那句「下一步做什麼」。
+function nodeInit(dir, f) {
   const state = loadState(dir);
 
   // 目錄名稱是固定的（www / projects / workspaces），只有磁碟機代號可以換。
@@ -473,11 +482,16 @@ async function cmdNodeInit(f) {
     console.log('\n這些目錄還不存在（install.ps1 會建內容根目錄，其餘要自己建）：');
     for (const m of missing) console.log('  ' + win(m));
   }
-  await after(dir, state, f);
+  return state;
 }
 
 async function cmdEdgeInit(f) {
   const dir = resolve(f.dir ? String(f.dir) : win(CADDY_DIR));
+  const state = edgeInit(dir, f);
+  await after(dir, state, f);
+}
+
+function edgeInit(dir, f) {
   const state = loadState(dir);
   const token = f.token ? String(f.token) : readToken(dir);
   if (!token) die('第一次設定 edge 要給 token：--token <duckdns token>');
@@ -543,7 +557,7 @@ async function cmdEdgeInit(f) {
   // 已經有網域的機器也不印：那是更新，不是第一次設定，使用者要看的是剛才
   // 重新產生了哪幾個，不是怎麼再加一個。
   if (isInstalled() && !regenerated.length) edgeAddHelp();
-  await after(dir, state, f);
+  return state;
 }
 
 function edgeAddHelp() {
@@ -965,10 +979,9 @@ const isInstalled = () => existsSync(join(win(CADDY_DIR), 'caddy.exe'));
 //
 // actiond 只聽 loopback，而 caddyctl 本來就在那台機器上跑，所以直接打埠沒有
 // 任何損失，而且 edge / node 走同一條路 —— 少一個要記的差異。
-function reloadUrl(state) {
-  const port = state.node?.actiond_port || NODE_DEFAULTS.actiond_port;
-  return 'http://127.0.0.1:' + port + '/run/caddy-reload';
-}
+const actiondBase = (state) =>
+  'http://127.0.0.1:' + (state.node?.actiond_port || NODE_DEFAULTS.actiond_port);
+const reloadUrl = (state) => actiondBase(state) + '/run/caddy-reload';
 
 // 「下一步做什麼」只有這一個地方講，因為答案取決於三種狀態，
 // 而每個指令結束時使用者要的都是同一句話。
@@ -998,6 +1011,266 @@ async function after(dir, state, f) {
   }
   console.log('');
   await doReload(state);
+}
+
+// ---------------------------------------------------------------- update
+//
+// 更新一台已經裝好的機器，**用普通權限**。git pull 之後（或直接跑分享出來的那份
+// repo）就是這一行。
+//
+// 要管理員的只有服務層：服務的帳號與環境變數、防火牆、排程工作、ACL。那一層由
+// install.ps1 負責，而且幾乎不會變。產品的檔案（actions、actiond、apps）使用者
+// 本來就寫得進 C:\Caddy，所以這裡自己抄，改一支 action、一份技能、甚至 actiond
+// 本身，都不必提權：
+//
+//   1. 照 manifest 重寫設定 —— 等於 node init / edge init，但**形狀照現有的**
+//      （static、沒有 /c/），不必記得當初帶過什麼旗標
+//   2. 產品的檔案換新（PRODUCT_FILES）
+//   3. actiond 換版：它自己發現 server.mjs 變了，結束，讓 nssm 用新版拉起來
+//   4. 套用（caddy-reload）—— 排在 actiond 換完之後，免得打在它重啟的那一秒
+//   5. 技能
+//
+// 服務層真的變了的時候，最後會講「要用系統管理員跑一次 install.ps1」和原因。
+// 判斷靠的是 src\service-layer.json 的版本號，見 serviceLayerGap()。
+
+// 產品的檔案：repo 裡的哪裡 -> C:\Caddy 底下的哪裡。目錄只抄第一層的檔案。
+// **install.ps1 的「樣板」那一段是同一份清單** —— 第一次安裝時服務還沒起來，
+// 要靠它先把檔案放好。改一邊就要改另一邊。
+const PRODUCT_FILES = [
+  ['src/actiond/server.mjs', 'actiond'],
+  ['templates/actiond', 'actiond'],
+  ['templates/actions', 'actions'],
+  ['templates/apps', 'apps'],
+];
+// 舊版留下來、已經沒有對應功能的檔案。留著的話，看到的人會以為那條路還通。
+// install.ps1 有同一份。
+const STALE_FILES = ['actiond/user-bridge.ps1', 'actiond/user-request.ps1',
+                     'actions/_userbridge.ps1', 'actions/_asuser.ps1'];
+
+// 內容一樣就不寫：寫了會動到 mtime，而 actiond 看到 server.mjs 變了就會重啟。
+// 要寫的先寫到旁邊再 rename 蓋過去 —— actiond 隨時可能在讀這些檔，不能讓它讀到
+// 半個檔。rename 被別人開著的檔擋住時，退回直接覆寫。
+function syncProductFiles(dir) {
+  const out = { changed: [], removed: [], failed: [], same: 0 };
+  const one = (src, to) => {
+    const rel = join(to, basename(src));
+    const dst = join(dir, rel);
+    const want = readFileSync(src);
+    if (existsSync(dst) && readFileSync(dst).equals(want)) { out.same++; return; }
+    const tmp = dst + '.update-' + process.pid;
+    try {
+      ensureDir(dirname(dst));
+      writeFileSync(tmp, want);
+      try {
+        renameSync(tmp, dst);
+      } catch (e) {
+        rmSync(tmp, { force: true });
+        if (!['EPERM', 'EACCES', 'EBUSY'].includes(e.code)) throw e;
+        writeFileSync(dst, want);
+      }
+      out.changed.push(rel);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      out.failed.push(rel + '：' + (e.code || e.message));
+    }
+  };
+  for (const [from, to] of PRODUCT_FILES) {
+    const src = join(REPO, from);
+    if (statSync(src).isDirectory()) {
+      for (const d of readdirSync(src, { withFileTypes: true })) {
+        if (d.isFile()) one(join(src, d.name), to);
+      }
+    } else {
+      one(src, to);
+    }
+  }
+  for (const rel of STALE_FILES) {
+    const p = join(dir, rel);
+    if (!existsSync(p)) continue;
+    try { rmSync(p); out.removed.push(rel); } catch (e) { out.failed.push(rel + '：' + (e.code || e.message)); }
+  }
+  return out;
+}
+
+function onPath(names) {
+  for (const d of String(process.env.PATH || '').split(';')) {
+    if (!d) continue;
+    for (const n of names) {
+      const p = join(d.replace(/^"|"$/g, ''), n);
+      if (existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+// src 底下有哪些檔案在 dst 裡不一樣或不存在（相對路徑）。dst 多出來的不算 ——
+// 那可能是安裝工具自己放的東西（OpenClaw 的 .openclaw\）。
+function differingFiles(src, dst) {
+  const out = [];
+  const walk = (rel) => {
+    for (const d of readdirSync(join(src, rel), { withFileTypes: true })) {
+      const r = join(rel, d.name);
+      if (d.isDirectory()) { walk(r); continue; }
+      const there = join(dst, r);
+      if (!existsSync(there) || !readFileSync(there).equals(readFileSync(join(src, r)))) out.push(r);
+    }
+  };
+  walk('');
+  return out;
+}
+
+// 「換新了什麼」要講出來，跟產品的檔案一樣 —— 不講的話，技能有沒有跟著更新只能
+// 自己去比對。
+const skillNote = (changed) =>
+  changed.length ? '換新：' + changed.join('、') : '本來就是最新的';
+
+// 技能。Claude Code 是直接複製；OpenClaw 有自己的技能目錄與登錄，要用它的 CLI 裝。
+// install.ps1 的「技能」那一段做的是同一件事。
+function installSkill() {
+  const src = join(REPO, 'skill');
+  const dst = join(os.homedir(), '.claude', 'skills', 'caddy');
+  try {
+    const changed = differingFiles(src, dst);
+    cpSync(src, dst, { recursive: true, force: true });
+    console.log('  Claude Code  ' + dst + '（' + skillNote(changed) + '）');
+  } catch (e) {
+    console.log('  Claude Code  失敗：' + e.message);
+  }
+
+  const oc = onPath(['openclaw.cmd', 'openclaw.exe']);
+  if (!oc) {
+    console.log('  OpenClaw     PATH 上沒有 openclaw，略過');
+    return;
+  }
+  // npm 的 shim 是 .cmd，Node 不經過 shell 叫不動它。
+  const sh = (args) => spawnSync('"' + oc + '" ' + args,
+    { shell: true, encoding: 'utf8', windowsHide: true, timeout: 180000 });
+
+  // **有兩個以上的 agent 時一定要帶 --agent。** 只有一個時 skills install 自己知道
+  // 裝給誰；兩個以上它就拒絕（"Multiple agents are configured, but the skills
+  // command has no explicit owner"）。裝給預設的那個 —— 只有一個 agent 時它本來
+  // 就是裝到那裡，而其他 agent 可能是刻意隔開的，替它們決定要不要管這台機器不是
+  // 這裡的事。列不出來（舊版沒有 --json）就照舊不帶。
+  let agent = null, changed = null;
+  try {
+    const out = sh('agents list --json').stdout || '';
+    const list = JSON.parse(out.slice(out.search(/^\[/m), out.lastIndexOf(']') + 1));
+    const pick = list.find((a) => a.isDefault) || (list.length === 1 ? list[0] : null);
+    if (pick && /^[\w.-]+$/.test(pick.id)) agent = pick.id;
+    // 工作區技能裝在 <workspace>\skills\<slug>\。比對只是為了講清楚，
+    // 拿不到 workspace 就不講，安裝照樣跑。
+    if (pick?.workspace) changed = differingFiles(src, join(pick.workspace, 'skills', 'caddy'));
+  } catch { /* 照舊不帶 --agent */ }
+
+  const r = sh('skills install "' + src + '" --as caddy --force' + (agent ? ' --agent ' + agent : ''));
+  if (r.status === 0) {
+    const notes = [agent && 'agent ' + agent, changed && skillNote(changed)].filter(Boolean);
+    console.log('  OpenClaw     已安裝' + (notes.length ? '（' + notes.join('，') + '）' : ''));
+    return;
+  }
+  console.log('  OpenClaw     安裝失敗（exit ' + r.status + '）：');
+  for (const l of ((r.stdout || '') + (r.stderr || '')).trim().split(/\r?\n/).slice(-8)) {
+    console.log('    ' + l);
+  }
+}
+
+// 服務層的版本。src\service-layer.json 是 repo 這一版要的；C:\Caddy\service-layer.json
+// 是這台上次跑 install.ps1 時寫下的。**沒有那個檔就當作版本 1**：這個機制出現之前
+// 裝的機器，服務層就是版本 1 的樣子 —— 把它們當成落後的話，第一次 update 就會叫人
+// 去開管理員視窗，而那正是要拿掉的事。
+function serviceLayerGap(dir) {
+  const want = JSON.parse(readFileSync(join(REPO, 'src', 'service-layer.json'), 'utf8'));
+  let have = 1;
+  try {
+    have = Number(JSON.parse(readFileSync(join(dir, 'service-layer.json'), 'utf8')).version) || 1;
+  } catch { /* 沒有這個檔 = 版本 1 */ }
+  const reasons = Object.entries(want.changes || {})
+    .filter(([v]) => Number(v) > have)
+    .map(([v, why]) => 'v' + v + '：' + why);
+  return { have, want: want.version, reasons };
+}
+
+// actiond 現在跑的是哪一份 server.mjs。它在每個回應的 x-actiond-build 標頭報那份
+// 檔案雜湊的前 12 碼。'' = 沒有這個標頭，是還不會自己換版的舊 actiond；
+// null = 沒回應（正在重啟）。
+const buildOf = (buf) => createHash('sha256').update(buf).digest('hex').slice(0, 12);
+async function actiondBuild(state) {
+  try {
+    const res = await fetch(actiondBase(state) + '/run', { signal: AbortSignal.timeout(3000) });
+    return res.headers.get('x-actiond-build') || '';
+  } catch {
+    return null;
+  }
+}
+
+async function cmdUpdate() {
+  const dir = win(CADDY_DIR);
+  if (!isInstalled()) {
+    die('這台還沒裝服務。第一次安裝是 node init（或 edge init）加上用「系統管理員」跑：\n'
+      + '    ' + join(REPO, 'src', 'install.ps1'));
+  }
+  const state = loadState(dir);
+  if (!state.roles.length) die(manifestPath(dir) + ' 裡沒有角色。先跑 node init 或 edge init。');
+  console.log('從 ' + REPO + ' 更新 ' + dir);
+
+  console.log('\n== 設定');
+  if (state.roles.includes('node')) {
+    nodeInit(dir, {
+      _: [],
+      static: state.node?.static || undefined,
+      'no-home': state.node && !state.node.home ? true : undefined,
+    });
+  }
+  if (state.roles.includes('edge')) edgeInit(dir, { _: [] });
+
+  console.log('\n== 產品的檔案');
+  const running = await actiondBuild(state);
+  const files = syncProductFiles(dir);
+  for (const c of files.changed) console.log('  換新  ' + c);
+  for (const r of files.removed) console.log('  移除  ' + r);
+  console.log('  ' + files.same + ' 個檔案本來就是最新的');
+  if (files.failed.length) {
+    console.log('\n寫不進去的檔案：');
+    for (const x of files.failed) console.log('  ' + x);
+    console.log('  這台的 ' + dir + ' 沒有給你寫入權。install.ps1 會明確給跑它的那個使用者；'
+      + '\n  更早裝的機器靠的是從 C:\\ 繼承下來的權限。');
+  }
+
+  if (files.changed.includes(join('actiond', 'server.mjs'))) {
+    const want = buildOf(readFileSync(join(dir, 'actiond', 'server.mjs')));
+    if (running === '') {
+      console.log('\n  actiond 還在跑舊版：這一版之前的 actiond 不會自己換版，下次重開機就會用新版。'
+        + '\n  不急的話不用管 —— action、設定和技能都已經是新的了。');
+    } else {
+      process.stdout.write('\n  等 actiond 換成新版 ');
+      let now = running;
+      for (let i = 0; i < 30 && now !== want; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        now = await actiondBuild(state);
+        process.stdout.write('.');
+      }
+      console.log(now === want
+        ? ' 好了（' + want + '）'
+        : ' 30 秒內沒有換成。看 ' + dir + '\\logs\\actiond.log 的最後幾行。');
+    }
+  }
+
+  console.log('\n== 套用');
+  await doReload(state);
+
+  console.log('\n== /caddy 技能');
+  installSkill();
+
+  const gap = serviceLayerGap(dir);
+  if (gap.reasons.length) {
+    console.log('\n⚠ 這次更新有一部分要系統管理員：服務層從 v' + gap.have + ' 變成 v' + gap.want + '。');
+    for (const r of gap.reasons) console.log('  ' + r);
+    console.log('  用「系統管理員」PowerShell 跑一次：\n    ' + join(REPO, 'src', 'install.ps1'));
+    console.log('  在那之前，上面換新的東西都已經生效了。');
+  } else if (!files.failed.length) {
+    console.log('\n更新完成，不需要系統管理員。');
+  }
+  if (files.failed.length) process.exit(1);
 }
 
 const USAGE = `caddyctl —— 一次設定一台機器，或一個網域
@@ -1050,6 +1323,9 @@ const USAGE = `caddyctl —— 一次設定一台機器，或一個網域
     規則存在 conf\\auth\\<站>\\，跟站台設定分開 ——
     conf\\sites\\<label>.caddy 每次 edge set 都會重寫，密碼放那裡會消失。
 
+  node src/caddyctl.mjs update      更新這台：照現有設定重寫 conf\\、換新 actions\\
+                                    actiond\\ apps\\ 的檔案、裝技能、套用。
+                                    不需要系統管理員；git pull 之後跑這一行就好。
   node src/caddyctl.mjs reload      套用設定變更（先 validate，沒過就完全不動作）
   node src/caddyctl.mjs list        這台現在長怎樣
 
@@ -1072,7 +1348,7 @@ if (!group || group === '--help' || group === '-h' || group === 'help') {
 }
 // 指令名稱先解出來，旗標檢查才有依據 —— 而且檢查一定在做事之前，
 // 打錯字的話一個檔案都不會被寫。
-const single = ['list', 'reload'].includes(group);
+const single = ['list', 'reload', 'update'].includes(group);
 const cmd = single ? group : [group, verb].filter(Boolean).join(' ');
 const args = single ? flags(argv.slice(1)) : f;
 
@@ -1085,6 +1361,7 @@ checkFlags(cmd, args);
 
 if (cmd === 'list') cmdList(args);
 else if (cmd === 'reload') await cmdReload(args);
+else if (cmd === 'update') await cmdUpdate();
 else if (cmd === 'node init') await cmdNodeInit(args);
 else if (cmd === 'edge init') await cmdEdgeInit(args);
 else if (cmd === 'edge set') await cmdEdgeSet(args);

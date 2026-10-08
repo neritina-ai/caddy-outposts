@@ -26,7 +26,9 @@
 import http from 'node:http';
 import { spawn, spawnSync, execSync, execFileSync } from 'node:child_process';
 import { readdir, readFile, writeFile, mkdir, rename, rm, stat } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { randomUUID, createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // 系統的 OEM codepage，用來當子行程輸出的 UTF-8 解碼失敗時的退路
@@ -523,7 +525,56 @@ async function panel(base) {
   return PAGE('Actions', body);
 }
 
+// ---------------------------------------------------------------- 換版
+//
+// `caddyctl update` 換掉這個檔之後，actiond 自己結束，nssm 用新版把它拉起來
+// （install.ps1 裝服務時 nssm 的 AppExit 是預設的 Restart）。重啟服務要管理員，
+// 而更新不該要 —— 所以由它自己來。
+//
+// 結束前要過三關：
+//   * 檔案停止變動 —— 連續兩次看到同一個 mtime/大小，才算寫完
+//   * `node --check` 過了 —— 新版有語法錯誤的話寧可繼續跑舊的，log 講一聲；
+//     結束掉就是 nssm 不停地把一個起不來的程式拉起來
+//   * 手上沒有正在處理的請求 —— 一支 action 跑到一半被拔掉，比晚幾秒換版糟得多；
+//     最多等 TIMEOUT，那是一支 action 本來就能跑的上限
+//
+// 每個回應都帶 x-actiond-build（這份檔案雜湊的前 12 碼），update 靠它確認換好了。
+const SELF  = fileURLToPath(import.meta.url);
+const BUILD = createHash('sha256').update(readFileSync(SELF)).digest('hex').slice(0, 12);
+let inflight = 0;
+
+function watchSelf() {
+  const sig = () => {
+    try { const s = statSync(SELF); return s.mtimeMs + ':' + s.size; } catch { return null; }
+  };
+  const started = sig();
+  let pending = null, rejected = null, leaving = false;
+  setInterval(() => {
+    const now = sig();
+    if (leaving || !now || now === started || now === rejected) return;
+    if (now !== pending) { pending = now; return; }      // 還在變，下一輪再看
+    const check = spawnSync(process.execPath, ['--check', SELF], { encoding: 'utf8', windowsHide: true });
+    if (check.status !== 0) {
+      rejected = now;
+      console.log('新的 server.mjs 沒通過 node --check，繼續跑舊版（' + BUILD + '）：\n' +
+                  (check.stderr || check.stdout || '').trim());
+      return;
+    }
+    leaving = true;
+    console.log('server.mjs 換版了，等手上的請求做完就結束，讓 nssm 用新版重新啟動');
+    const deadline = Date.now() + TIMEOUT;
+    const tryExit = () => {
+      if (inflight === 0 || Date.now() > deadline) process.exit(0);
+      setTimeout(tryExit, 200);
+    };
+    tryExit();
+  }, 3000).unref();
+}
+
 const server = http.createServer(async (req, res) => {
+  inflight++;
+  res.on('close', () => { inflight--; });
+  res.setHeader('x-actiond-build', BUILD);
   const url = new URL(req.url, 'http://x');
   const send = (code, type, body) =>
     res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' }).end(body);
@@ -654,7 +705,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log('actiond listening on http://' + HOST + ':' + PORT + '  actions=' + ACTIONS_DIR);
+  console.log('actiond listening on http://' + HOST + ':' + PORT + '  actions=' + ACTIONS_DIR +
+              '  build=' + BUILD);
+  watchSelf();
   if (BRIDGE_USER) {
     console.log('  使用者身分橋接：' + BRIDGE_USER + ' 透過排程工作 ' + BRIDGE_TASK +
                 '（' + BRIDGE_DIR + '）');

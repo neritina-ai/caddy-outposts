@@ -257,6 +257,31 @@ manifest 有一條額外的硬性規定：**內容必須是純 ASCII**，caddyct
     之後（那台上的人或 AI）     寫檔案（apps\、內容目錄、conf\auth\）
                                  └─ POST http://127.0.0.1:9001/run/caddy-reload
 
+    更新（那台上的人或 AI）     caddyctl update
+
+### 更新不需要管理員
+
+`install.ps1` 做兩種性質不同的事：抄產品的檔案（actions、actiond、apps）和裝服務
+（帳號、環境變數、防火牆、排程工作、ACL）。只有後者要管理員，而且幾乎不會變。
+所以更新是 `caddyctl update`，普通權限：照 manifest 重寫設定、抄檔案、裝技能、套用。
+兩邊的檔案清單是同一份（`PRODUCT_FILES` 和 `install.ps1` 的「樣板」），改一邊要改另一邊。
+
+* **寫得進 `C:\Caddy` 不能靠繼承。** `C:\` 底下新建的目錄通常繼承到
+  `Authenticated Users: Modify`，但磁碟根目錄被收緊過的機器就沒有。`install.ps1`
+  明確把 Modify 給這台的使用者（跟給 actiond 的服務帳號同一個理由）。
+* **actiond 自己換版。** 重啟服務要管理員，所以 actiond 每幾秒看一次自己的
+  `server.mjs`：變了、停止變動、`node --check` 過了、手上沒有請求，才結束自己，
+  讓 nssm（`AppExit` 預設是 Restart）用新版拉起來。新版有語法錯誤就繼續跑舊的，
+  不要結束 —— 結束掉就是 nssm 不停地拉一個起不來的程式。每個回應帶
+  `x-actiond-build`（檔案雜湊），update 靠它確認換好了。
+* **服務層有版本號。** `src\service-layer.json` 的 `version` 是這一版要的服務層，
+  `install.ps1` 跑完把它寫進 `C:\Caddy\service-layer.json`。update 比較兩者，落後了
+  才叫人用管理員跑 `install.ps1`，並印出 `changes` 裡的原因。**這台沒有那個檔就當
+  版本 1** —— 當成落後的話，每一台的第一次 update 都會叫人開管理員視窗。
+  改了服務層卻忘了加版本號，那台會安靜地停在舊的服務層，所以 `install.ps1` 檔頭寫著這條規矩。
+* **update 保留機器的形狀。** `node init` 的 `--static` 是宣告式的，沒帶就變回完整
+  功能；update 照 manifest 把 static、沒有 `/c/` 原樣帶回去，使用者不必記得當初的旗標。
+
 `actiond` **刻意不放在 Caddy 後面**，自己聽一個獨立的埠。如果它藏在 Caddy 後面，
 一旦 Caddy 設定被改壞或服務沒起來，救援管道就跟著不見了。
 
@@ -295,6 +320,7 @@ fleet 沒有「中央管理」這回事，也不該有：
 | 加一台 node | **人**，在那台上 `node init` + `install.ps1`（要管理員） |
 | 把網域指過去 | **人**，在 **edge 那台**上 `edge set` |
 | 加 app、發佈內容、加 action、路徑密碼 | **那台上的 AI**，寫檔 + `/_/run/caddy-reload` |
+| 更新到 repo 的新版 | **那台上的人或 AI**，`caddyctl update`（不用管理員） |
 
 **AI 拿不到「加一台機器」的能力**，因為那需要管理員權限。裝在每台上的 `/caddy`
 技能，寫的是「管理你所在的這一台」—— 但那是**分工的約定，不是技術上的圍牆**：
@@ -932,12 +958,13 @@ HTTP 請求就卡到 timeout 為止（實測：一個啟動服務的 action 卡�
       docs\DESIGN.md          這一份
       skill\SKILL.md          安裝到 ~\.claude\skills\caddy\
       src\
-        caddyctl.mjs          設定這台機器 / 加減網域
+        caddyctl.mjs          設定這台機器 / 加減網域 / 更新
         render.mjs            算繪函式（純函式，不碰檔案系統）
         install.ps1           在目標機器上跑（唯一需要管理員的一步）
+        service-layer.json    服務層的版本號，見「更新不需要管理員」
         uninstall.ps1         把那一步做的事全部還原
         actiond\server.mjs    action daemon
-      templates\              安裝時複製到 C:\Caddy 的骨架
+      templates\              安裝和更新時複製到 C:\Caddy 的骨架
         Caddyfile
         actions\ actiond\ apps\ www\
       examples\

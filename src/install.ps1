@@ -24,11 +24,19 @@
 #
 #  只有這一步需要管理員。裝完之後所有設定變更都能用 HTTP 完成。
 #
-#  **它是照著「可以重跑」寫的，所以 git pull 之後再跑一次就是一次更新** ——
-#  上面七件事裡，該跳過的跳過（caddy.exe / nssm.exe）、該換新的換新
-#  （actions\、actiond\、apps\）、服務重裝（等於重啟，有幾秒中斷）。
-#  使用者的東西一個都不碰：conf\ 是 caddyctl 的地盤，<槽>\www\index.html
-#  已存在就保留，而使用者自己寫進 actions\ 的腳本不在複製範圍內。
+#  **平常的更新不跑這支。** git pull 之後是 `node src\caddyctl.mjs update`，
+#  普通權限就夠：它重寫設定、換新 actions\ actiond\ apps\、裝技能、套用，
+#  actiond 會自己換版。這支只在兩種時候跑：第一次安裝，以及服務層變了 ——
+#  也就是真的要管理員的那幾件事（服務的帳號與環境變數、防火牆、排程工作、ACL、
+#  caddy.exe / nssm.exe）。
+#
+#  **改了服務層，就把 src\service-layer.json 的 version 加一**，並在 changes
+#  寫一句原因。caddyctl update 拿它跟這台的 C:\Caddy\service-layer.json 比，
+#  落後了才叫人用管理員跑這支。忘了加的話，那台會安靜地停在舊的服務層。
+#
+#  它照樣可以重跑：該跳過的跳過（caddy.exe / nssm.exe）、該換新的換新、服務重裝
+#  （等於重啟，有幾秒中斷）。使用者的東西一個都不碰：conf\ 是 caddyctl 的地盤，
+#  <槽>\www\index.html 已存在就保留，而使用者自己寫進 actions\ 的腳本不在複製範圍內。
 # =============================================================================
 # [CmdletBinding()] 不能省：沒有它的話，param() 底下沒列到的參數會安靜地落進
 # $args 被忽略。打錯一個旗標卻什麼都不說，是這套工具最不該有的失敗方式。
@@ -304,6 +312,26 @@ try {
     Say ('  actiond 可能寫不了 log —— 裝完檢查 ' + $Dir + '\logs\actiond.log')
 }
 
+# 這台的使用者也要寫得進來：更新（caddyctl update）不需要管理員，靠的就是這條。
+# 跟上面同一個理由，不要靠從 C:\ 繼承下來的 Authenticated Users。
+if ($bridgeUser) {
+    try {
+        $acl = Get-Acl $Dir
+        $acl.SetAccessRule((New-Object Security.AccessControl.FileSystemAccessRule(
+            $bridgeUser,
+            [Security.AccessControl.FileSystemRights]::Modify,
+            ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+             [Security.AccessControl.InheritanceFlags]::ObjectInherit),
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow)))
+        Set-Acl -Path $Dir -AclObject $acl
+        Say ('  已授權 {0} 寫入 {1}（caddyctl update 用）' -f $bridgeUser, $Dir)
+    } catch {
+        Say ('  授權 {0} 寫入失敗：{1}' -f $bridgeUser, $_.Exception.Message)
+        Say '  之後的 caddyctl update 可能寫不進去，到時候它會列出是哪些檔'
+    }
+}
+
 # ---------------------------------------------------------------- caddy.exe
 Say ''
 Say '=== caddy.exe ==='
@@ -341,6 +369,9 @@ if (Test-Path $nssm) {
 }
 
 # ---------------------------------------------------------------- 樣板
+# 這份清單（連同下面的舊檔案）跟 caddyctl.mjs 的 PRODUCT_FILES／STALE_FILES 是
+# 同一份：平常的更新走那邊，這裡是第一次安裝時、服務起來之前先把檔案放好。
+# 改一邊就要改另一邊。
 Say ''
 Say '=== 樣板 ==='
 Copy-Item (Join-Path $repo 'src\actiond\server.mjs') (Join-Path $Dir 'actiond') -Force
@@ -598,6 +629,16 @@ if ($bridgeUser) {
     Say '  之後用 .\src\install.ps1 -BridgeUser <帳號> 重跑就會補上'
 }
 
+# ---------------------------------------------------------------- 服務層版本
+# caddyctl update 拿這個檔跟 repo 的 src\service-layer.json 比，決定要不要叫人用
+# 管理員再跑一次這支。走到這裡，服務、防火牆、排程工作都已經是這一版的樣子。
+$layer = (Get-Content (Join-Path $repo 'src\service-layer.json') -Raw -Encoding UTF8 |
+          ConvertFrom-Json).version
+[IO.File]::WriteAllText((Join-Path $Dir 'service-layer.json'),
+                        ('{"version": ' + $layer + '}' + "`n"), [Text.UTF8Encoding]::new($false))
+Say ''
+Say "=== 服務層 v$layer ==="
+
 # ---------------------------------------------------------------- 技能
 # 這台機器上會有哪些 AI 工具，事先不知道。所以每一種都試著裝一份 ——
 # 裝了才有用，沒裝的那種就跳過，不要因為少一個工具就整支腳本失敗。
@@ -624,14 +665,29 @@ if (-not $SkipSkill) {
           Select-Object -First 1
     $skillSrc = Join-Path $repo 'skill'
     if ($oc) {
-        $r = Invoke-Exe $oc.Source "skills install `"$skillSrc`" --as caddy --force"
+        # **有兩個以上的 agent 時一定要帶 --agent**，否則 skills install 直接拒絕
+        # （"Multiple agents are configured, but the skills command has no explicit
+        # owner"）。裝給預設的那個，跟 caddyctl update 同一套規則。
+        # 只用正規表示式撈 ASCII 的欄位，不整份 ConvertFrom-Json：這裡是 PS 5.1，
+        # 原生程式的輸出照系統碼頁解，agent 名字裡的中文會變成亂碼。
+        $agentArg = ''
+        $listed = (Invoke-Exe $oc.Source 'agents list --json').Output -join "`n"
+        $agents = @([regex]::Matches($listed, '\{[^{}]*\}') | ForEach-Object {
+            if ($_.Value -match '"id"\s*:\s*"([\w.-]+)"') {
+                [pscustomobject]@{ Id = $Matches[1]; Default = ($_.Value -match '"isDefault"\s*:\s*true') }
+            }
+        })
+        $pick = @($agents | Where-Object { $_.Default })[0]
+        if (-not $pick -and $agents.Count -eq 1) { $pick = $agents[0] }
+        if ($pick) { $agentArg = ' --agent ' + $pick.Id }
+        $r = Invoke-Exe $oc.Source "skills install `"$skillSrc`" --as caddy --force$agentArg"
         if ($r.ExitCode -eq 0) {
-            Say '  OpenClaw     已安裝（openclaw skills install --as caddy）'
+            Say ("  OpenClaw     已安裝（openclaw skills install --as caddy" + $agentArg + "）")
         } else {
             Say '  OpenClaw     安裝失敗：'
             $r.Output | ForEach-Object { Say "    $_" }
             Say '    可以自己重跑：'
-            Say "    openclaw skills install `"$skillSrc`" --as caddy --force"
+            Say "    openclaw skills install `"$skillSrc`" --as caddy --force$agentArg"
         }
     } else {
         Say '  OpenClaw     PATH 上沒有 openclaw，略過。'
