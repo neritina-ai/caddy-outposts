@@ -1,5 +1,5 @@
 // @title   新的 session：在某個專案上開一個
-// @desc    挑一個現有的專案，或建一個新的；開起來的那個帶著 Remote Control
+// @desc    挑一個現有的專案，或建一個新的；開一個帶 Remote Control 的 Claude Code，或一段 Codex 對話
 // @group   claude
 // @page
 // @only-when-logged-on
@@ -7,6 +7,9 @@
 // This page starts a *new* Claude Code session on a project directory, with
 // Remote Control on, so the phone can pick it up. Its sibling cc-rc.mjs does
 // the other half: re-opening sessions that are already running without RC.
+//
+// It can start a Codex conversation instead. That half opens no window and
+// needs a first message; the Codex section below says why.
 //
 // Why this can be a plain `Start-Process claude.exe` and nothing more:
 //
@@ -35,7 +38,7 @@
 // hands this whole script to the bridge when someone is logged on, so the code
 // below already runs as the user -- it never has to cross a bridge itself.
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync,
          readdirSync, statSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -342,6 +345,224 @@ async function waitForSession(dir, beforePids, ms) {
 }
 
 // =============================================================================
+//  Codex
+// =============================================================================
+//
+// A phone reaches Codex through the ChatGPT app, which drives the Codex desktop
+// app on this machine and lists the conversations Codex has saved. So the Codex
+// half opens no window: it starts a conversation in the project directory and
+// then lets go of it.
+//
+// **A Codex conversation exists only once a turn has run in it.** thread/start
+// on its own saves nothing, and a thread holding only injected history items is
+// not listed either -- thread/list finds neither, and finds the thread as soon
+// as one real turn has run. That is why the Codex choice comes with a first
+// message, and why Codex starts working on it right away.
+//
+// **One writer per conversation.** Codex lets a single app-server write to a
+// thread at a time. The turn runs in a private `codex app-server` (stdio
+// JSON-RPC), which a detached copy of this script (`--codex-hold`) keeps alive
+// until the turn completes and then closes. From then on the desktop app and
+// the phone own the conversation; until then they can watch but not type. The
+// page itself cannot wait for the turn: the bridge gives a page 15 seconds.
+//
+// The project is trusted with a `-c` override on that private app-server only,
+// so the user's Codex config is never edited by us. Model, sandbox and approval
+// settings are not passed: they come from that config, as in the desktop app.
+
+const PROMPT_MAX    = 8000;
+const CODEX_WAIT_MS = 10000;       // page side: how long to wait for the turn to start
+
+// PATH first (a standalone CLI install), then the copy the desktop app keeps
+// for itself under %LOCALAPPDATA%\OpenAI\Codex\bin\<build>\. Old builds stay
+// there after an update, so the newest one wins.
+function findCodex() {
+  for (const d of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!d) continue;
+    const p = path.join(d.replace(/^"|"$/g, ''), 'codex.exe');
+    if (existsSync(p)) return p;
+  }
+  const root = path.join(process.env.LOCALAPPDATA || path.join(homedir(), 'AppData', 'Local'),
+                         'OpenAI', 'Codex', 'bin');
+  let best = null, newest = -1;
+  let builds = [];
+  try { builds = readdirSync(root); } catch { /* no desktop app */ }
+  for (const b of builds) {
+    const p = path.join(root, b, 'codex.exe');
+    try {
+      const t = statSync(p).mtimeMs;
+      if (t > newest) { best = p; newest = t; }
+    } catch { /* not a build directory */ }
+  }
+  return best;
+}
+
+// A Codex session sets these for the commands it runs. They describe that
+// session, not the one about to be started -- the same reason ENV_SCRUB exists
+// for Claude Code, and it matters for the same person: whoever runs this
+// script by hand from inside a session.
+const CODEX_SESSION_VARS = ['CODEX_APP_TOOLS_PIPE_PATH', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID',
+                            'CODEX_INTERNAL_ORIGINATOR_OVERRIDE', 'CODEX_PERMISSION_PROFILE'];
+function codexEnv() {
+  const env = { ...process.env };
+  for (const k of Object.keys(env)) {
+    if (CODEX_SESSION_VARS.includes(k.toUpperCase())) delete env[k];
+  }
+  return env;
+}
+
+// A private app-server spoken to over stdio: one JSON message per line.
+function appServer(exe, dir) {
+  const p = spawn(exe,
+    ['app-server', '--stdio', '-c', 'projects.' + JSON.stringify(dir) + '.trust_level="trusted"'],
+    { cwd: dir, env: codexEnv(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const pending = new Map();
+  const waiters = [];
+  let nextId = 0, buf = '', errTail = '', gone = false;
+
+  const exited = new Promise(res => {
+    const done = () => {
+      if (gone) return;
+      gone = true;
+      const why = new Error('Codex app-server 結束了' + (errTail.trim() ? '：' + errTail.trim() : ''));
+      for (const f of pending.values()) f({ error: { message: why.message } });
+      pending.clear();
+      res();
+    };
+    p.on('close', done);
+    p.on('error', e => { errTail += e.message; done(); });
+  });
+  const send = m => { if (!gone) p.stdin.write(JSON.stringify(m) + '\n'); };
+  p.stdin.on('error', () => { /* the process went away; `exited` reports it */ });
+
+  p.stderr.setEncoding('utf8');
+  p.stderr.on('data', d => { errTail = (errTail + d).slice(-2000); });
+  p.stdout.setEncoding('utf8');
+  p.stdout.on('data', d => {
+    buf += d;
+    for (let i; (i = buf.indexOf('\n')) >= 0;) {
+      const line = buf.slice(0, i);
+      buf = buf.slice(i + 1);
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m.id != null && !m.method) {
+        const f = pending.get(m.id);
+        if (f) { pending.delete(m.id); f(m); }
+        continue;
+      }
+      // A request from the server is an approval or a question for a person.
+      // There is nobody here to ask, and granting one silently is not ours to
+      // do, so every one is declined.
+      if (m.id != null) send({ id: m.id, error: { code: -32601, message: 'cc-open has no one to ask' } });
+      for (const w of waiters.splice(0)) {
+        if (w.method === m.method) w.res(m.params); else waiters.push(w);
+      }
+    }
+  });
+
+  const call = (method, params) => new Promise((res, rej) => {
+    if (gone) return rej(new Error('Codex app-server 已經結束了'));
+    const id = ++nextId;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      rej(new Error(method + ' 60 秒沒有回應'));
+    }, 60000);
+    pending.set(id, m => {
+      clearTimeout(timer);
+      if (m.error) rej(new Error(method + '：' + (m.error.message || JSON.stringify(m.error))));
+      else res(m.result || {});
+    });
+    send({ id, method, params });
+  });
+  const notify = (method, params) => send({ method, params });
+  // Resolves on the next notification of that kind, or when the server exits.
+  const next = method => Promise.race([new Promise(res => waiters.push({ method, res })), exited]);
+  // Closing stdin is how an app-server is told to finish; an idle one exits.
+  const close = async () => {
+    try { p.stdin.end(); } catch { /* already gone */ }
+    await Promise.race([exited, new Promise(r => setTimeout(r, 5000))]);
+    if (!gone) { try { p.kill(); } catch { /* already gone */ } }
+  };
+  return { call, notify, next, close };
+}
+
+// The detached helper. It reads its job, starts the conversation, reports the
+// thread to the page through a status file, and holds the app-server until the
+// first turn has finished.
+async function holdCodex(jobFile) {
+  let job;
+  try {
+    job = JSON.parse(readFileSync(jobFile, 'utf8'));
+  } catch {
+    return;
+  } finally {
+    rmSync(jobFile, { force: true });
+  }
+  // Written beside and renamed over, so the page never reads half of it.
+  const report = s => {
+    const tmp = job.status + '.tmp';
+    try { writeFileSync(tmp, JSON.stringify(s), 'utf8'); renameSync(tmp, job.status); } catch { /* page gives up */ }
+  };
+
+  const exe = findCodex();
+  if (!exe) return report({ error: '找不到 codex.exe（PATH 上沒有，Codex 桌面版的目錄裡也沒有）' });
+
+  const srv = appServer(exe, job.dir);
+  let reported = false;
+  try {
+    await srv.call('initialize', {
+      clientInfo: { name: 'cc-open', title: 'cc-open', version: '1' },
+      capabilities: { experimentalApi: true },
+    });
+    srv.notify('initialized', {});
+    const listed = await srv.call('thread/list', { cwd: job.dir, limit: 100 });
+    const name = pickSessionName(job.project, listed.data);
+    const { thread } = await srv.call('thread/start', { cwd: job.dir });
+    await srv.call('thread/name/set', { threadId: thread.id, name });
+    const finished = srv.next('turn/completed');
+    await srv.call('turn/start', { threadId: thread.id, input: [{ type: 'text', text: job.prompt }] });
+    report({ threadId: thread.id, name });
+    reported = true;
+    await finished;
+  } catch (e) {
+    if (!reported) report({ error: e.message });
+  } finally {
+    await srv.close();
+  }
+}
+
+// The page side: hand the job to a detached helper and wait until the turn has
+// started. `detached` with `stdio: 'ignore'` matters twice over: the helper
+// must outlive this process, and it must not hold this process's stdout -- the
+// bridge reads that pipe to its end, so a helper holding it would keep the page
+// waiting for the whole first turn.
+async function startCodex(dir, project, prompt) {
+  const id = randomUUID();
+  const jobFile = path.join(tmpdir(), 'cc-open-codex-' + id + '.json');
+  const status  = path.join(tmpdir(), 'cc-open-codex-' + id + '.status');
+  writeFileSync(jobFile, JSON.stringify({ dir, project, prompt, status }), 'utf8');
+  try {
+    const child = spawn(process.execPath, [process.argv[1], '--codex-hold', jobFile],
+      { cwd: dir, env: codexEnv(), detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => { /* reported below as a timeout */ });
+    child.unref();
+  } catch (e) {
+    rmSync(jobFile, { force: true });
+    return { error: e.message };
+  }
+  const deadline = Date.now() + CODEX_WAIT_MS;
+  for (;;) {
+    try {
+      const s = JSON.parse(readFileSync(status, 'utf8'));
+      rmSync(status, { force: true });
+      return s;
+    } catch { /* not yet */ }
+    if (Date.now() >= deadline) return { timeout: true };
+    await new Promise(r => setTimeout(r, 250));
+  }
+}
+
+// =============================================================================
 //  Page
 // =============================================================================
 
@@ -372,6 +593,15 @@ code{font-size:.9em}
 .box label.chk{display:flex;gap:.6rem;align-items:flex-start;margin-top:.7rem;font-size:.9rem}
 .box label.chk input{width:1.15rem;height:1.15rem;margin:.2rem 0 0;flex:none}
 .box .d{font-size:.8rem;color:var(--mut);display:block;margin-top:.15rem}
+.eng{display:flex;gap:.5rem;margin:.9rem 0 .2rem}
+.eng label{flex:1;display:flex;align-items:center;justify-content:center;gap:.45rem;padding:.5rem;border:1px solid var(--line);border-radius:8px;background:var(--card);cursor:pointer}
+.eng label:has(input:checked){border-color:var(--link);color:var(--link);font-weight:600}
+.eng label.off{opacity:.5;cursor:not-allowed}
+.eng input{margin:0}
+.first{display:none;margin-top:.5rem}
+form:has(input[name=engine][value=codex]:checked) .first{display:block}
+.first textarea{width:100%;font:inherit;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);resize:vertical}
+.d.sm{font-size:.8rem;color:var(--mut);display:block;margin-top:.15rem}
 button{font:inherit;font-size:.95rem;padding:.6rem 1.2rem;border-radius:8px;border:1px solid var(--link);background:var(--link);color:#fff;cursor:pointer;width:100%;margin-top:.4rem}
 button:disabled{background:var(--card);color:var(--mut);border-color:var(--line);cursor:not-allowed}
 pre{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.9rem;overflow-x:auto;font-size:.85rem;white-space:pre-wrap;word-break:break-word}
@@ -434,14 +664,33 @@ const barLine = extra =>
 
 const NOTE =
   '<div class="note">挑一個專案（或建一個新的），這台機器就在那個目錄開一個 Claude Code，' +
-  '<strong>帶著 Remote Control</strong>，手機上馬上看得到。' +
+  '<strong>帶著 Remote Control</strong>，手機上馬上看得到。也可以改開一段 Codex 對話。' +
   '<details><summary>電腦那端會發生什麼</summary><ul>' +
-  '<li>視窗開在你系統設定的那個終端機裡，而且是<strong>最小化</strong>的 —— ' +
+  '<li>Claude：視窗開在你系統設定的那個終端機裡，而且是<strong>最小化</strong>的 —— ' +
   '正在用電腦的人不會被打擾，回到電腦前從工作列點開就能接手。</li>' +
-  '<li>標題是 <code>✳ 名字</code>，名字就是專案名稱；' +
+  '<li>Claude：標題是 <code>✳ 名字</code>，名字就是專案名稱；' +
   '同一個專案已經有 session 的話，新的那個後面會加編號。</li>' +
-  '<li>這一頁只負責把它開起來，不會替你送出第一句話 —— 要說什麼在手機上打。</li>' +
+  '<li>Claude：這一頁只負責把它開起來，不會替你送出第一句話 —— 要說什麼在手機上打。</li>' +
+  '<li>Codex：不開視窗。第一句話在這一頁打，它在背景做完第一輪就放手，' +
+  '之後在手機的 ChatGPT（Codex）或電腦上的 Codex 桌面版接著用。對話名稱一樣是專案名稱。</li>' +
   '</ul></details></div>';
+
+// Claude or Codex, right before each button. The first-message box shows only
+// while Codex is picked (pure CSS, :has); Codex needs one, see its section.
+function engineBlock(codexOk) {
+  return '<div class="eng">' +
+      '<label><input type="radio" name="engine" value="claude" checked><span>Claude</span></label>' +
+      '<label' + (codexOk ? '' : ' class="off"') + '>' +
+        '<input type="radio" name="engine" value="codex"' + (codexOk ? '' : ' disabled') + '>' +
+        '<span>Codex</span></label>' +
+    '</div>' +
+    (codexOk ? '' : '<span class="d sm">這台找不到 Codex，所以只能開 Claude。</span>') +
+    '<div class="first">' +
+      '<textarea name="prompt" rows="3" maxlength="' + PROMPT_MAX + '" placeholder="第一句話"></textarea>' +
+      '<span class="d sm">Codex 的對話要先跑過一輪才會出現在手機上，所以第一句話在這裡打；' +
+      '按下去它就開始做。</span>' +
+    '</div>';
+}
 
 function projectRow(p, sessionCount) {
   const when = p.mtime ? '最後變動 ' + ago(p.mtime) : '';
@@ -456,7 +705,7 @@ function projectRow(p, sessionCount) {
     '</label>';
 }
 
-function pickerBody(root, list, sessionList, lead) {
+function pickerBody(root, list, sessionList, lead, codexOk) {
   const counts = new Map();
   for (const a of sessionList || []) {
     for (const p of list) {
@@ -470,7 +719,7 @@ function pickerBody(root, list, sessionList, lead) {
   const existing = list.length
     ? '<h2>現有的專案</h2>' +
       '<form method="POST" action="' + esc(SELF) + '">' +
-      '<input type="hidden" name="mode" value="pick">' + rows +
+      '<input type="hidden" name="mode" value="pick">' + rows + engineBlock(codexOk) +
       '<button>在這個專案開一個 session</button></form>'
     : '<h2>現有的專案</h2><div class="note">' + esc(root) + ' 底下還沒有任何專案目錄。</div>';
 
@@ -485,7 +734,7 @@ function pickerBody(root, list, sessionList, lead) {
       '<span class="d">會建在 ' + esc(root) + ' 底下。英文字母、數字、「.」「-」「_」。</span>' +
       '<label class="chk"><input type="checkbox" name="genesis" value="1">' +
       '<span>同時建立 <code>genesis/FIATLUX.md</code></span></label>' +
-    '</div>' +
+    '</div>' + engineBlock(codexOk) +
     '<button>建立並開一個 session</button></form>';
 
   return (lead || '') + NOTE + existing + fresh;
@@ -495,7 +744,16 @@ const errPage = (why, detail) => page('新的 session',
   TOP + '<p class="bad">' + esc(why) + '</p>' +
   (detail ? '<pre>' + esc(detail) + '</pre>' : '') + barLine());
 
+// ---------------------------------------------------------------- Codex helper
+// The detached copy started by startCodex(). It is not a page: no HTML, no exit
+// until the first turn is over.
+if (process.argv[2] === '--codex-hold') {
+  await holdCodex(process.argv[3]);
+  process.exit(0);
+}
+
 // ---------------------------------------------------------------- shared setup
+const CODEX_OK = !!findCodex();
 const ROOT = projectsRoot();
 if (!ROOT) {
   process.stdout.write(errPage(
@@ -534,7 +792,7 @@ if (METHOD !== 'POST') {
   const body = TOP +
     barLine('<span>' + projects.length + ' 個專案</span>') +
     (error ? '<p class="bad">列不出正在跑的 session：' + esc(error) + '</p>' : '') +
-    pickerBody(ROOT, projects, list, lead);
+    pickerBody(ROOT, projects, list, lead, CODEX_OK);
   process.stdout.write(page('新的 session', body));
   process.exit(0);
 }
@@ -551,11 +809,13 @@ const form    = new URLSearchParams(raw);
 const mode    = form.get('mode') === 'new' ? 'new' : 'pick';
 const typed   = (form.get('name') || '').trim();
 const genesis = form.get('genesis') === '1';
+const engine  = form.get('engine') === 'codex' ? 'codex' : 'claude';
+const prompt  = (form.get('prompt') || '').trim();
 
 const bail = why => {
   process.stdout.write(page('新的 session', TOP +
     '<p class="bad">' + esc(why) + '</p>' + barLine() +
-    pickerBody(ROOT, projects, sessions().list, '')));
+    pickerBody(ROOT, projects, sessions().list, '', CODEX_OK)));
   process.exit(0);
 };
 
@@ -571,6 +831,11 @@ if (mode === 'new') {
   if (problem) bail(problem);
 } else if (!typed) {
   bail('還沒有選到專案。');
+}
+if (engine === 'codex') {
+  if (!CODEX_OK) bail('這台找不到 Codex（PATH 上沒有 codex.exe，也沒有 Codex 桌面版）。');
+  if (!prompt) bail('選 Codex 要先打第一句話 —— Codex 的對話要先跑過一輪才會存在。');
+  if (prompt.length > PROMPT_MAX) bail('第一句話太長了（上限 ' + PROMPT_MAX + ' 個字）。');
 }
 
 // Typing the name of a project that is already there is not an error -- it is
@@ -588,6 +853,8 @@ if (mode === 'new' && hit) {
     '<input type="hidden" name="mode" value="pick">' +
     '<input type="hidden" name="name" value="' + esc(hit.name) + '">' +
     (genesis ? '<input type="hidden" name="genesis" value="1">' : '') +
+    '<input type="hidden" name="engine" value="' + engine + '">' +
+    (engine === 'codex' ? '<input type="hidden" name="prompt" value="' + esc(prompt) + '">' : '') +
     '<button>好，連到現有的 ' + esc(hit.name) + '</button></form>' +
     (genesis ? '<div class="note">裡面沒有 <code>genesis/FIATLUX.md</code> 的話會一併建起來；' +
       '已經有了就不動它。</div>' : '') +
@@ -625,6 +892,38 @@ try {
   process.exit(0);
 }
 
+const madeNote = made.length
+  ? '<div class="note">建立了 ' + made.map(m => '<code>' + esc(m) + '</code>').join('、') + '。</div>'
+  : '';
+
+if (engine === 'codex') {
+  const started = Date.now();
+  const r = await startCodex(dir, project, prompt);
+  const waited = Math.round((Date.now() - started) / 1000);
+  let body;
+  if (r.threadId) {
+    body =
+      '<p class="ok">' + esc(project) + ' 的 Codex 對話開好了（' + waited + ' 秒），' +
+      '第一句話已經送出，它正在做。</p>' + madeNote +
+      '<div class="note"><strong>接著怎麼用</strong><ul>' +
+      '<li>手機：ChatGPT 裡的 Codex，找 <code>' + esc(r.name) + '</code> 這段對話。</li>' +
+      '<li><strong>第一輪做完之前只能看、不能接著打。</strong>Codex 的一段對話同一時間只能有一個' +
+      '程式在寫，那時候寫的是這台背景裡的那一個；做完它就放手。</li>' +
+      '<li>回到電腦前：在 Codex 桌面版裡打開同一段對話。</li></ul></div>';
+  } else if (r.timeout) {
+    body =
+      '<p class="bad">Codex 在 ' + waited + ' 秒內沒有回報。</p>' + madeNote +
+      '<div class="note">它可能只是起得比較慢 —— 過一下到手機的 ChatGPT（Codex）看看有沒有 ' +
+      '<code>' + esc(project) + '</code> 的對話。沒有的話就是沒開成，可以再按一次。</div>';
+  } else {
+    body = '<p class="bad">Codex 的對話沒有開成。</p>' + madeNote +
+      '<pre>' + esc(r.error || '（沒有錯誤訊息）') + '</pre>';
+  }
+  process.stdout.write(page('新的 session', TOP + body +
+    barLine('<a href="' + esc(SELF) + '">再開一個</a>')));
+  process.exit(0);
+}
+
 const before = sessions();
 const beforePids = new Set((before.list || []).map(a => a.pid));
 const name = pickSessionName(project, before.list);
@@ -646,10 +945,6 @@ const backHome = sid =>
   '再到你的分頁跑 <code>claude --resume ' + esc(sid || '<session-id>') +
   ' --remote-control ' + esc(name) + ' --name ' + esc(name) + '</code>。' +
   '不先結束的話會有兩個行程寫同一份對話紀錄。</li></ul></div>';
-
-const madeNote = made.length
-  ? '<div class="note">建立了 ' + made.map(m => '<code>' + esc(m) + '</code>').join('、') + '。</div>'
-  : '';
 
 const ok = run.code === 0 && !!session;
 let head;

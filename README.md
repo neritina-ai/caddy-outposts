@@ -280,7 +280,7 @@ node src\caddyctl.mjs reload
 | `/_/c/` | 這台裝了哪些工具（家目錄裡的設定檔） | 要 |
 | `/_/run` | action 面板 | 要 |
 | `/_/run/<名稱>` | 執行某個 action | 要 |
-| `/_/run/cc-open` | 挑一個專案（或建一個新的），開一個帶 Remote Control 的 Claude Code | 要 |
+| `/_/run/cc-open` | 挑一個專案（或建一個新的），開一個帶 Remote Control 的 Claude Code，或一段 Codex 對話 | 要 |
 | `/_/run/cc-rc` | 幫這台上的 Claude Code session 開 Remote Control | 要 |
 | `/_/run/git-status` | 挑一個專案，看它 push 了沒有、remote 網址、最近五代的 commit | 要 |
 | `/_/p/`、`/_/w/` | `<槽>\projects`、`<槽>\workspaces` | 要 |
@@ -348,7 +348,7 @@ curl.exe -X POST http://127.0.0.1:9001/run/caddy-reload
 string 和表單 body 交給腳本，stdout 原樣當 HTML 送出去。一個檔案一個網址，
 不用開埠、不用寫 `.caddy` 片段、不用 reload。`actions\cc-rc.mjs` 是現成的例子。
 
-### 在手機上開一個新的 Claude Code session
+### 在手機上開一個新的 session（Claude Code 或 Codex）
 
 打開 `/_/run/cc-open`：挑一個 `<槽>\projects` 底下的專案，或在文字框輸入一個名字
 建一個新的，按下去這台機器就在那個目錄開一個 Claude Code，**帶著 Remote Control**
@@ -361,6 +361,8 @@ string 和表單 body 交給腳本，stdout 原樣當 HTML 送出去。一個檔
 - 電腦那端的視窗開在你系統設定的那個終端機裡，而且是**最小化**的：正在用電腦的人
   不會被打擾，回到電腦前從工作列點開就能接手（標題 `✳ 名字`）
 - 這一頁只負責把它開起來，不會替你送出第一句話 —— 要說什麼在手機上打
+- 按鈕前面可以改選 **Codex**：要在框裡打第一句話，它在背景做完第一輪，之後在手機的
+  ChatGPT（Codex）或 Codex 桌面版接著用。第一輪做完之前只能看、不能接著打
 
 > 第一次在某個目錄開 Claude Code，它本來會先問「是否信任這個資料夾」，而那種
 > session 沒有輸入框、也不會有 Remote Control，手機上救不回來。這一頁會在啟動前

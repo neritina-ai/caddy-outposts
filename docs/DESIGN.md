@@ -549,6 +549,27 @@ pid 拿掉了。使用者不需要它，而且它在畫面上唯一的作用是�
 視窗為什麼不是用 `-WindowStyle Minimized` 開的、而是開完再縮：見
 [Windows 的坑](#7-windows-的坑都是實際踩到的)。
 
+#### Codex 那一半：開一段對話，跑完第一輪就放手
+
+手機接 Codex 走的是 ChatGPT app → 這台的 **Codex 桌面版**，看得到的是 Codex 存下來的
+對話。CLI 開在終端機裡的 Codex，手機看不到。所以選 Codex 時不開視窗：起一個私人的
+`codex app-server`（stdio JSON-RPC），`thread/start` → `thread/name/set` →
+`turn/start`，第一輪做完就把它關掉，對話交給桌面版和手機。
+
+* **一定要有第一句話。** 只有 `thread/start` 的對話不會存下來；用 `thread/inject_items`
+  塞歷史進去的也不算 —— `thread/list` 兩種都找不到，跑過一輪真的 turn 才找得到。
+  所以 Claude 那邊「不替你送第一句」的規矩，到 Codex 這邊不成立。
+* **第一輪由一個脫離的背景程序撐著**（同一支腳本加 `--codex-hold`）。Codex 一段對話
+  同時只能有一個 app-server 在寫，所以要等那一輪做完才放手；而橋只給一頁 15 秒。
+  它必須 `detached` 加 `stdio: 'ignore'`：橋會把 action 的 stdout 讀到底，背景程序
+  只要拿著那條管線，頁面就會一直等到第一輪結束。
+* **信任只給那個私人的 app-server**（`-c projects."<目錄>".trust_level="trusted"`），
+  不改使用者的 Codex 設定。模型、沙盒、核准一律不傳，沿用使用者自己的設定。
+
+> **試過但做不到：`codex app <目錄>`。** 那是官方「在桌面版打開這個目錄」的指令，
+> 底下是 `codex://threads/new?path=<目錄>`。桌面版已經開著的時候，它只把視窗叫到
+> 前景，既不把目錄加進專案，也不切過去 —— 手機上什麼都不會多。
+
 ### `git-status`：看的時候不連線，要連線自己按
 
 `/_/run/git-status` 回答「這個專案跟 GitHub 誰比較新」。`git status` 的
