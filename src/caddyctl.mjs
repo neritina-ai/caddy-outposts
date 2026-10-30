@@ -29,7 +29,7 @@
 // =============================================================================
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync,
          renameSync, statSync, cpSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
@@ -172,9 +172,14 @@ function ensureDir(p) {
   mkdirSync(p, { recursive: true });
 }
 
+// 內容一樣就不寫。conf\ 仍然一律以產品產生的為準，只是沒變的檔不去動它的修改時間
+// —— update 才講得出「這次換了哪些檔」，不然每個檔看起來都剛被換過。
+const written = [];
 function writeText(p, text) {
+  try { if (readFileSync(p, 'utf8') === text) return; } catch { /* 還沒有這個檔 */ }
   ensureDir(dirname(p));
   writeFileSync(p, text, 'utf8');
+  written.push(p);
 }
 
 // nodeLayout 回傳的是 posix 寫法，manifest 要 Windows 寫法。
@@ -1132,7 +1137,13 @@ const skillNote = (changed) =>
 
 // 技能。Claude Code 是直接複製；OpenClaw 有自己的技能目錄與登錄，要用它的 CLI 裝。
 // install.ps1 的「技能」那一段做的是同一件事。
-function installSkill() {
+//
+// **OpenClaw 的技能沒變就完全不呼叫 openclaw。** 有的機器上，gateway 在跑的時候
+// 執行 skills install，gateway 會自己重啟、重啟失敗、然後就停在那裡 —— 而這裡的
+// 輸出照樣是「已安裝」。所以裝到哪裡要記在 conf\openclaw-skill.txt：下次先比對
+// 那個資料夾，一樣就到此為止，連 agents list 都不跑。還沒有紀錄的機器跑一次
+// agents list 找位置，內容一樣的話也只記下來、不安裝。
+function installSkill(dir) {
   const src = join(REPO, 'skill');
   const dst = join(os.homedir(), '.claude', 'skills', 'caddy');
   try {
@@ -1148,6 +1159,13 @@ function installSkill() {
     console.log('  OpenClaw     PATH 上沒有 openclaw，略過');
     return;
   }
+  const record = join(dir, 'conf', 'openclaw-skill.txt');
+  let known = null;
+  try { known = readFileSync(record, 'utf8').trim() || null; } catch { /* 還沒有紀錄 */ }
+  if (known && existsSync(known) && !differingFiles(src, known).length) {
+    console.log('  OpenClaw     ' + known + '（本來就是最新的，沒有呼叫 openclaw）');
+    return;
+  }
   // npm 的 shim 是 .cmd，Node 不經過 shell 叫不動它。
   const sh = (args) => spawnSync('"' + oc + '" ' + args,
     { shell: true, encoding: 'utf8', windowsHide: true, timeout: 180000 });
@@ -1157,27 +1175,58 @@ function installSkill() {
   // command has no explicit owner"）。裝給預設的那個 —— 只有一個 agent 時它本來
   // 就是裝到那裡，而其他 agent 可能是刻意隔開的，替它們決定要不要管這台機器不是
   // 這裡的事。列不出來（舊版沒有 --json）就照舊不帶。
-  let agent = null, changed = null;
+  let agent = null, target = null, changed = null;
   try {
     const out = sh('agents list --json').stdout || '';
     const list = JSON.parse(out.slice(out.search(/^\[/m), out.lastIndexOf(']') + 1));
     const pick = list.find((a) => a.isDefault) || (list.length === 1 ? list[0] : null);
     if (pick && /^[\w.-]+$/.test(pick.id)) agent = pick.id;
-    // 工作區技能裝在 <workspace>\skills\<slug>\。比對只是為了講清楚，
-    // 拿不到 workspace 就不講，安裝照樣跑。
-    if (pick?.workspace) changed = differingFiles(src, join(pick.workspace, 'skills', 'caddy'));
+    // 工作區技能裝在 <workspace>\skills\<slug>\。拿不到 workspace 就不比對、
+    // 不記錄，每次都照舊安裝。
+    if (pick?.workspace) {
+      target = join(pick.workspace, 'skills', 'caddy');
+      changed = differingFiles(src, target);
+    }
   } catch { /* 照舊不帶 --agent */ }
 
-  const r = sh('skills install "' + src + '" --as caddy --force' + (agent ? ' --agent ' + agent : ''));
-  if (r.status === 0) {
-    const notes = [agent && 'agent ' + agent, changed && skillNote(changed)].filter(Boolean);
-    console.log('  OpenClaw     已安裝' + (notes.length ? '（' + notes.join('，') + '）' : ''));
+  if (changed && !changed.length) {
+    writeText(record, target);
+    console.log('  OpenClaw     ' + target + '（本來就是最新的' + (agent ? '，agent ' + agent : '') + '）');
     return;
   }
-  console.log('  OpenClaw     安裝失敗（exit ' + r.status + '）：');
-  for (const l of ((r.stdout || '') + (r.stderr || '')).trim().split(/\r?\n/).slice(-8)) {
-    console.log('    ' + l);
+  // 真的要裝。裝之前 gateway 在跑的話，裝完要確認它還在 —— 掛掉的那種機器上，
+  // 它要等人手動 openclaw gateway start 才會回來，而這裡是唯一知道剛剛動過它的地方。
+  const up = () => /"ok"\s*:\s*true/.test(sh('gateway health --json --timeout 5000').stdout || '');
+  const wasUp = up();
+  const r = sh('skills install "' + src + '" --as caddy --force' + (agent ? ' --agent ' + agent : ''));
+  if (r.status === 0) {
+    if (target) writeText(record, target);
+    const notes = [agent && 'agent ' + agent, changed && skillNote(changed)].filter(Boolean);
+    console.log('  OpenClaw     已安裝' + (notes.length ? '（' + notes.join('，') + '）' : ''));
+  } else {
+    console.log('  OpenClaw     安裝失敗（exit ' + r.status + '）：');
+    for (const l of ((r.stdout || '') + (r.stderr || '')).trim().split(/\r?\n/).slice(-8)) {
+      console.log('    ' + l);
+    }
   }
+  if (wasUp) checkGateway(sh, up);
+}
+
+// 裝完之後的 gateway。它可能正在自己重啟，所以先多問幾次再下結論；
+// 真的停了才 start，然後等它回來。結果一定要印出來 —— 停掉的 gateway 是安靜的。
+function checkGateway(sh, up) {
+  const pause = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+  for (let i = 0; i < 3; i++) {
+    if (up()) { console.log('  OpenClaw     gateway 還在跑'); return; }
+    pause();
+  }
+  console.log('  OpenClaw     ⚠ 裝完之後 gateway 停了，執行 openclaw gateway start');
+  sh('gateway start');
+  for (let i = 0; i < 6; i++) {
+    pause();
+    if (up()) { console.log('  OpenClaw     gateway 回來了'); return; }
+  }
+  console.log('  OpenClaw     ⚠ gateway 沒有回來。在這台手動執行：openclaw gateway start');
 }
 
 // 服務層的版本。src\service-layer.json 是 repo 這一版要的；C:\Caddy\service-layer.json
@@ -1228,6 +1277,9 @@ async function cmdUpdate() {
     });
   }
   if (state.roles.includes('edge')) edgeInit(dir, { _: [] });
+  const conf = written.splice(0);
+  for (const p of conf) console.log('  換新  ' + relative(dir, p));
+  if (!conf.length) console.log('  設定檔本來就是最新的');
 
   console.log('\n== 產品的檔案');
   const running = await actiondBuild(state);
@@ -1265,7 +1317,7 @@ async function cmdUpdate() {
   await doReload(state);
 
   console.log('\n== /caddy 技能');
-  installSkill();
+  installSkill(dir);
 
   const gap = serviceLayerGap(dir);
   if (gap.reasons.length) {
