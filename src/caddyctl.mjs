@@ -267,17 +267,22 @@ function writeConfigIndex(dir, state, node) {
 // 它在不在，不會更新。git pull 之後重跑 node init 看起來成功，實際上還在用
 // 舊骨架。（實測踩到：加了 (cfgfile) 之後 reload 直接報 "File to import not
 // found: cfgfile"。硬錯誤算幸運的，換成別種改動就是安靜地跑舊行為。）
-// Markdown 渲染樣板。**由 caddyctl 寫，不是 install.ps1。**
+// Markdown 渲染樣板和目錄列表樣板。**由 caddyctl 寫，不是 install.ps1。**
 //
 // conf\ 底下的東西全是 caddyctl 的產物，這個不該是例外。放在 install.ps1 的話，
 // 更新它就要管理員 + 重跑安裝 —— 而 install.ps1 的設計是「一台機器一輩子只跑
 // 這一次」，之後所有變更都該能用 caddyctl 完成。放這裡，git pull 之後
 // caddyctl update（或 node init）就更新到了。
 //
-// 一律覆蓋：它是產品的檔案。要改樣式就改 repo 裡的 templates\www\md.html。
-function writeMdTemplate(dir) {
-  writeText(join(dir, 'conf', 'md.html'),
-            readFileSync(join(REPO, 'templates', 'www', 'md.html'), 'utf8'));
+// node 和 edge 都要寫：骨架裡的 fsdav、webroot 會去 conf\ 找這兩個檔，而 edge
+// 自己服務的靜態站用的就是 webroot。少了 browse.html，目錄列表整頁失敗。
+//
+// 一律覆蓋：它們是產品的檔案。要改樣式就改 repo 裡的 templates\www\。
+function writePageTemplates(dir) {
+  for (const name of ['md.html', 'browse.html']) {
+    writeText(join(dir, 'conf', name),
+              readFileSync(join(REPO, 'templates', 'www', name), 'utf8'));
+  }
 }
 
 function writeSkeleton(dir) {
@@ -457,7 +462,7 @@ function nodeInit(dir, f) {
   writeSkeleton(dir);
   writeText(join(sitesDir(dir), '_node.caddy'), renderNodeSite(node));
   writeConfigIndex(dir, state, node);
-  writeMdTemplate(dir);
+  writePageTemplates(dir);
   writeText(join(dir, 'conf', 'panel.html'), renderPanel(state.machine, node));
   rewriteGlobal(dir, state);
   saveState(dir, state);
@@ -501,6 +506,7 @@ function edgeInit(dir, f) {
   if (f.machine) state.machine = String(f.machine);
 
   writeSkeleton(dir);
+  writePageTemplates(dir);
   ensureDir(sitesDir(dir));
   rewriteGlobal(dir, state, token);
 
