@@ -849,6 +849,21 @@ loopback** —— 但 `reverse_proxy 127.0.0.1:9001` 送過去的請求本來就
 
 它加的是**加密碼的瀏覽**，不是 WebDAV —— 公開網站那一側沒有寫入能力可以解鎖。
 
+**Windows 的路徑別名。** 規則比對的是網址字串，開檔案的是 Windows，而 Windows 上
+同一個檔案有好幾個名字：資料夾名結尾的點會被去掉（`/reports./a.html`），8.3 短檔名
+（`/REPORT~1/…`）和 NTFS 資料流（`/reports::$INDEX_ALLOCATION/…`）也指到同一個地方。
+這些網址對不上 `basic_auth /reports/*`，於是落到公開根目錄，不用密碼就開到檔案；
+app 路由裡的 `@private path /.git/*` 一樣被繞過，WebDAV 甚至寫得進去。
+
+所以骨架裡的 `winpath` 排在 `webroot`、`fsdav` 的最前面，在 Windows 上一律回 404，
+擋的是整類網址，不是特定的網址。不放在站台那一層，因為 reverse_proxy 的 app 不碰磁碟，
+結尾有點的網址對它是正當的。自己寫 `file_server` 的 app 路由沒有這層保護，所以要提供
+目錄內容就 `import webroot`。
+
+`redir /x /x/ 308` 仍然接得到 `/x.`：Caddy 的 path matcher 在 Windows 上比對前會去掉
+路徑最尾端的點和空白。它只會轉到 `/x/`，那裡照常要過規則，所以不是洞；要讓它回 404
+就得替每一條 redir 寫特例，不做。
+
 ---
 
 ## 5. 尚未指派的網域：DNS 可以，憑證不行

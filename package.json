@@ -1,6 +1,6 @@
 {
   "name": "caddy-outposts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Turn a set of Windows machines into a small self-hosted web cluster, with a /caddy skill for the AI working on them",
   "type": "module",
   "license": "MIT",
